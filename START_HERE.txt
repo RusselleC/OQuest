@@ -1,0 +1,39 @@
+🎮 OQUEST - QUICK START
+═══════════════════════════════════════════════════════════════════
+
+👉 TO PLAY NOW (Windows):
+   1. Double-click:  launch.bat
+   2. Game opens automatically ✓
+
+═══════════════════════════════════════════════════════════════════
+
+📚 Documentation:
+   
+   • EXECUTABLE_SETUP.md ............ Full setup guide (3 methods)
+   • LAUNCHER_README.md ............ Troubleshooting & controls
+
+═══════════════════════════════════════════════════════════════════
+
+⚙️ Requirements:
+   ✓ Node.js (https://nodejs.org/)
+   ✓ Modern browser (Chrome, Firefox, Edge)
+   ✓ Internet connection (Firebase)
+
+═══════════════════════════════════════════════════════════════════
+
+🚀 What's Included:
+
+   ✓ launch.bat ................... Double-click to run (Windows)
+   ✓ launch.ps1 ................... PowerShell version
+   ✓ Electron setup ............... For professional .exe installer
+   ✓ Firebase auth ................ Secure login system
+   ✓ OS Glossary .................. 20 learning terms
+   ✓ Audio system ................. Soundtrack + SFX
+   ✓ Save/Load .................... Progress persistence
+   ✓ Leaderboard .................. Time-based ranking
+
+═══════════════════════════════════════════════════════════════════
+
+❓ Still unsure? Read: EXECUTABLE_SETUP.md
+
+═══════════════════════════════════════════════════════════════════
