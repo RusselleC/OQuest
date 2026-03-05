@@ -2,17 +2,17 @@ import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, set, get, push, query, orderByChild, limitToLast } from 'firebase/database';
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 
-// Gemini AI API Key
-export const GEMINI_API_KEY = "AIzaSyD296Ld15Lh8pzUKGwQQM9CSqlsh9M9iA4";
+// Gemini AI API Key from environment variables
+export const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCoXG64zCIVOjwU2haBt9sMAlgc_NQoCXE",
-  authDomain: "oquest-ndmc-142bf.firebaseapp.com",
-  databaseURL: "https://oquest-ndmc-142bf-default-rtdb.firebaseio.com",
-  projectId: "oquest-ndmc-142bf",
-  storageBucket: "oquest-ndmc-142bf.firebasestorage.app",
-  messagingSenderId: "659241437784",
-  appId: "1:659241437784:web:8dc1df40c21f8d8b81d82d"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
 const app = initializeApp(firebaseConfig);

@@ -51,4 +51,4 @@ export const WORLD_MAP = (() => {
   return map;
 })();
 
-export const GEMINI_API_KEY = "AIzaSyBeINqQSXLxAGOepbzs2bsEx1-piR0-6zI";
+export const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
