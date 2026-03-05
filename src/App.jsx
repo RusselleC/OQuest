@@ -29,12 +29,44 @@ import { OS_GLOSSARY, QUIZZES, CROSSWORD_CLUES, createMultiChoice, createFillBla
 //  GEMINI AI INTEGRATION
 // ═══════════════════════════════════════
 
+// OS Topic Keywords for validation
+const OS_KEYWORDS = [
+  'operating system', 'os', 'kernel', 'process', 'thread', 'cpu', 'memory', 'disk', 'file system',
+  'scheduler', 'algorithm', 'deadlock', 'semaphore', 'mutex', 'paging', 'segmentation', 'virtual memory',
+  'interrupt', 'system call', 'boot', 'linux', 'windows', 'unix', 'macos', 'android', 'ios',
+  'filesystem', 'directory', 'permission', 'user', 'kernel mode', 'user mode', 'context switch',
+  'multitasking', 'multiprocessing', 'concurrency', 'parallelism', 'synchronization', 'race condition',
+  'cache', 'buffer', 'swap', 'partition', 'mount', 'device driver', 'ioctl', 'fork', 'exec',
+  'pipe', 'signal', 'shared memory', 'message queue', 'socket', 'network', 'protocol', 'tcp',
+  'udp', 'ip', 'dns', 'http', 'firewall', 'security', 'encryption', 'authentication', 'authorization'
+];
+
+// Check if question is OS-related
+const isOSRelated = (question) => {
+  const lowerQuestion = question.toLowerCase();
+  return OS_KEYWORDS.some(keyword => lowerQuestion.includes(keyword));
+};
+
 const queryOracle = async (question) => {
   try {
     console.log("🔮 Asking Gemini:", question);
 
-    // Add prompt instruction for concise response
-    const conciseQuestion = `Answer this in 3-5 sentences maximum, keep it concise and educational:\n\n${question}`;
+    // Validate OS-related question
+    if (!isOSRelated(question)) {
+      return "🔮 Oracle: I can only answer questions about Operating Systems and computer science concepts. Please ask about OS topics like processes, memory management, scheduling algorithms, file systems, or system architecture.";
+    }
+
+    // Enhanced prompt for OS-specific educational responses
+    const osPrompt = `You are an expert Operating System Oracle in a fantasy RPG called OQUEST. Answer ONLY about operating system concepts, computer science fundamentals, and related technical topics.
+
+Key guidelines:
+- Focus on OS concepts: processes, threads, memory management, scheduling, file systems, etc.
+- Use mystical OS metaphors when appropriate (processes as "wandering spirits", memory as "crystal chambers", etc.)
+- Keep answers educational and technically accurate
+- Answer in 3-5 sentences maximum
+- If the question is not OS-related, politely redirect to OS topics
+
+Question: ${question}`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -44,7 +76,7 @@ const queryOracle = async (question) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: conciseQuestion }] }]
+          contents: [{ parts: [{ text: osPrompt }] }]
         })
       }
     );
@@ -53,13 +85,13 @@ const queryOracle = async (question) => {
 
     if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
       let answer = data.candidates[0].content.parts[0].text.trim();
-      
+
       // Limit to max 5 sentences just in case
       const sentences = answer.match(/[^.!?]+[.!?]+/g) || [answer];
       if (sentences.length > 5) {
         answer = sentences.slice(0, 5).join('').trim();
       }
-      
+
       console.log("✨ Gemini answered:", answer);
       return answer;
     }
