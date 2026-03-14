@@ -141,7 +141,9 @@ const computeSJF_NP = (processes) => {
       currentTime = next.arrivalTime;
       continue;
     }
-    const idx = procs.findIndex(p => available.includes(p) && !completed.has(procs.indexOf(p)));
+    available.sort((a, b) => a.burstTime - b.burstTime);
+    const shortest = available[0];
+    const idx = procs.indexOf(shortest);
     const p = procs[idx];
     const startTime = currentTime;
     const endTime = startTime + p.burstTime;
@@ -158,45 +160,70 @@ const computeSJF_NP = (processes) => {
 };
 
 const computeSRTF = (processes) => {
-  const procs = JSON.parse(JSON.stringify(processes)).map(p => ({...p, remaining: p.burstTime}));
+  const safeProcs = Array.isArray(processes) ? processes.filter(Boolean) : [];
+  if (safeProcs.length === 0) return {gantt: [], results: [], avgWait: 0, avgTurnaround: 0};
+
+  const procs = JSON.parse(JSON.stringify(safeProcs)).map(p => ({
+    ...p,
+    burstTime: typeof p.burstTime === "number" ? p.burstTime : 0,
+    arrivalTime: typeof p.arrivalTime === "number" ? p.arrivalTime : 0,
+    remaining: typeof p.burstTime === "number" ? p.burstTime : 0,
+  }));
+
   let currentTime = 0;
   const gantt = [];
   const completed = [];
-  const totalBurst = procs.reduce((sum, p) => sum + p.burstTime, 0);
   const results = Array(procs.length).fill(null);
   let lastId = -1;
-  while(completed.length < procs.length) {
-    const available = procs.filter((p, i) => p.remaining > 0 && p.arrivalTime <= currentTime);
-    if(available.length === 0) {
-      const next = procs.find(p => p.remaining > 0);
+
+  while (completed.length < procs.length) {
+    const available = procs.filter((p) => p.remaining > 0 && p.arrivalTime <= currentTime);
+    if (available.length === 0) {
+      const next = procs.find((p) => p.remaining > 0);
+      if (!next) break;
       currentTime = next.arrivalTime;
       continue;
     }
-    const idx = procs.findIndex(p => available.includes(p) && p.remaining > 0 && (lastId === -1 || procs[lastId].remaining < 1 || p.remaining < procs[lastId].remaining || procs[lastId].remaining === 0));
-    if(lastId !== idx) lastId = idx;
+    const idx = procs.findIndex(
+      (p) =>
+        available.includes(p) &&
+        p.remaining > 0 &&
+        (lastId === -1 ||
+          procs[lastId].remaining < 1 ||
+          p.remaining < procs[lastId].remaining ||
+          procs[lastId].remaining === 0)
+    );
+    if (idx === -1) break;
+    if (lastId !== idx) lastId = idx;
     const p = procs[idx];
     p.remaining--;
     currentTime++;
-    if(gantt.length === 0 || gantt[gantt.length-1].id !== p.id || gantt[gantt.length-1].end !== currentTime - 1) {
-      if(gantt.length > 0 && gantt[gantt.length-1].id === p.id && gantt[gantt.length-1].end === currentTime - 1) {
-        gantt[gantt.length-1].end = currentTime;
+
+    if (gantt.length === 0 || gantt[gantt.length - 1].id !== p.id || gantt[gantt.length - 1].end !== currentTime - 1) {
+      if (gantt.length > 0 && gantt[gantt.length - 1].id === p.id && gantt[gantt.length - 1].end === currentTime - 1) {
+        gantt[gantt.length - 1].end = currentTime;
       } else {
         gantt.push({id: p.id, start: currentTime - 1, end: currentTime, color: colors[p.id % colors.length]});
       }
     } else {
-      gantt[gantt.length-1].end = currentTime;
+      gantt[gantt.length - 1].end = currentTime;
     }
-    if(p.remaining === 0) {
+
+    if (p.remaining === 0) {
       const turnaround = currentTime - p.arrivalTime;
-      const burst = processes.find(x => x.id === p.id).burstTime;
+      const burst = procs[idx].burstTime;
       const wait = turnaround - burst;
       results[idx] = {id: p.id, arrival: p.arrivalTime, burst, completion: currentTime, turnaround, wait};
       completed.push(idx);
     }
   }
-  const validResults = results.filter(r => r !== null);
-  const avgWait = validResults.reduce((sum, r) => sum + r.wait, 0) / validResults.length;
-  const avgTurnaround = validResults.reduce((sum, r) => sum + r.turnaround, 0) / validResults.length;
+
+  const validResults = results.filter((r) => r !== null);
+  const avgWait = validResults.length ? validResults.reduce((sum, r) => sum + r.wait, 0) / validResults.length : 0;
+  const avgTurnaround = validResults.length
+    ? validResults.reduce((sum, r) => sum + r.turnaround, 0) / validResults.length
+    : 0;
+
   return {gantt, results: validResults, avgWait, avgTurnaround};
 };
 
@@ -377,6 +404,20 @@ const computeMemoryAllocation = (jobs, totalRam, pageSize, strategy) => {
   return {frames, allocations, externalFragmentation, utilization, internalWaste: allocations.reduce((sum, a) => sum + a.internalWaste, 0)};
 };
 
+// helper to build comparison array for all algorithms
+const computeAllComparisons = (processes, quantum) => {
+  const algos = ["FCFS","SJF","SRTF","RR","Priority"];
+  return algos.map(a=>{
+    let res;
+    if(a==="FCFS") res = computeFCFS(processes);
+    else if(a==="SJF") res = computeSJF_NP(processes);
+    else if(a==="SRTF") res = computeSRTF(processes);
+    else if(a==="RR") res = computeRR(processes, quantum);
+    else res = computePriority(processes);
+    return {algo:a, avgWait:res.avgWait, avgTurnaround:res.avgTurnaround, gantt:res.gantt};
+  });
+};
+
 // ═══════════════════════════════════════
 //  MAIN GAME
 // ═══════════════════════════════════════
@@ -397,8 +438,8 @@ export default function OSQuestGame() {
 
   const [playerPos, setPlayerPos] = useState({x:24,y:16});
   const [startPos, setStartPos] = useState({x:24,y:16});
-  const [camX, setCamX] = useState(24 - Math.floor(VIEW_W/2));
-  const [camY, setCamY] = useState(16 - Math.floor(VIEW_H/2));
+  const [camX, setCamX] = useState(24 - Math.floor(Math.min(VIEW_W, Math.floor(window.innerWidth/TILE)+1)/2));
+  const [camY, setCamY] = useState(16 - Math.floor(Math.min(VIEW_H, Math.floor((window.innerHeight-90)/TILE)+1)/2));
   const [playerDir, setPlayerDir] = useState(1);
   const [playerMoving, setPlayerMoving] = useState(false);
   const [mapEnemies, setMapEnemies] = useState([]);
@@ -456,6 +497,7 @@ export default function OSQuestGame() {
   const [cpuNpcStep, setCpuNpcStep] = useState(0);
   const [cpuNpcMinimized, setCpuNpcMinimized] = useState(false);
   const [cpuCompareResults, setCpuCompareResults] = useState(null);
+  const [showAlgoArena, setShowAlgoArena] = useState(false);
   
   // Memory Management state
   const [memJobs, setMemJobs] = useState([
@@ -1093,8 +1135,10 @@ export default function OSQuestGame() {
       moveTimer.current--;
 
       // Camera smoothing: runs EVERY frame for silky smooth panning
-      const targetX = clamp(posRef.current.x - Math.floor(VIEW_W/2), 0, MAP_W-VIEW_W);
-      const targetY = clamp(posRef.current.y - Math.floor(VIEW_H/2), 0, MAP_H-VIEW_H);
+      const dynW = Math.min(VIEW_W, Math.floor(window.innerWidth/TILE)+1);
+      const dynH = Math.min(VIEW_H, Math.floor((window.innerHeight-90)/TILE)+1);
+      const targetX = clamp(posRef.current.x - Math.floor(dynW/2), 0, MAP_W-dynW);
+      const targetY = clamp(posRef.current.y - Math.floor(dynH/2), 0, MAP_H-dynH);
       setCamX(cx => {
         const diff = targetX - cx;
         return Math.abs(diff) < 0.005 ? targetX : cx + diff * 0.40;
@@ -1847,6 +1891,8 @@ export default function OSQuestGame() {
   // ─────────────────────────────────
   const G=`
     @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Cinzel+Decorative:wght@400;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap');
+    html{font-size:clamp(16px,2.2vw,26px);}
+    *{font-size:clamp(14px,2vw,23px);}
     *{box-sizing:border-box;margin:0;padding:0;}
     body{background:#0a0806;overflow:hidden;}
     @keyframes legSwing{0%{transform:rotate(-18deg)}25%{transform:rotate(8deg)}50%{transform:rotate(-18deg)}75%{transform:rotate(12deg)}100%{transform:rotate(-18deg)}}
@@ -1874,10 +1920,10 @@ export default function OSQuestGame() {
     @keyframes slideUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
     ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:#0f0a06}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#9a6030,#6a4020);border-radius:4px;border:1px solid #3a2010;}
     ::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#b07040,#8a5030)}
-    .cinzel{font-family:'Cinzel',serif;}
-    .cinzel-deco{font-family:'Cinzel Decorative',serif;}
-    .crimson{font-family:'Crimson Text',serif;}
-    .btn{font-family:'Cinzel',serif;background:transparent;border:2px solid;padding:10px 24px;cursor:pointer;transition:all .2s ease;font-size:12px;letter-spacing:1px;text-transform:uppercase;border-radius:4px;font-weight:600;}
+    .cinzel{font-family:'Cinzel',serif;font-size:clamp(12px,1.3vw,17px);}
+    .cinzel-deco{font-family:'Cinzel Decorative',serif;font-size:clamp(18px,2vw,28px);}
+    .crimson{font-family:'Crimson Text',serif;font-size:clamp(15px,1.6vw,21px);}
+    .btn{font-family:'Cinzel',serif;background:transparent;border:2px solid;padding:clamp(9px,1.1vw,14px) clamp(18px,2vw,32px);cursor:pointer;transition:all .2s ease;font-size:clamp(12px,1.3vw,17px);letter-spacing:1px;text-transform:uppercase;border-radius:4px;font-weight:600;}
     .btn:active{transform:scale(0.95);}
     .btn-gold{color:#f5c518;border-color:#f5c518;} .btn-gold:hover{background:linear-gradient(135deg,#f5c51833,#f5c51855);box-shadow:0 0 18px #f5c51855,inset 0 1px 2px rgba(255,255,255,0.08);transform:translateY(-1px);}
     .btn-red{color:#ff5555;border-color:#ff5555;} .btn-red:hover{background:#ff555533;box-shadow:0 0 18px #ff555555,inset 0 1px 2px rgba(255,255,255,0.08);transform:translateY(-1px);}
@@ -1886,10 +1932,10 @@ export default function OSQuestGame() {
     .btn-purple{color:#d850ff;border-color:#d850ff;} .btn-purple:hover{background:#d850ff33;box-shadow:0 0 18px #d850ff55,inset 0 1px 2px rgba(255,255,255,0.08);transform:translateY(-1px);}
     .panel{background:rgba(20,14,8,0.80);border:1.5px solid rgba(200,165,80,0.40);backdrop-filter:blur(12px);border-radius:6px;}
     .panel-dark{background:rgba(12,8,4,0.85);border:1px solid rgba(200,165,80,0.25);backdrop-filter:blur(8px);}
-    .abt{font-family:'Cinzel',serif;font-size:10px;background:linear-gradient(135deg,rgba(25,20,10,0.9),rgba(15,12,6,0.8));border:1px solid rgba(200,165,80,0.25);color:#e8d5a0;padding:9px 12px;cursor:pointer;transition:all .15s;text-align:left;border-radius:5px;font-weight:600;}
+    .abt{font-family:'Cinzel',serif;font-size:18px;background:linear-gradient(135deg,rgba(25,20,10,0.9),rgba(15,12,6,0.8));border:1px solid rgba(200,165,80,0.25);color:#e8d5a0;padding:9px 12px;cursor:pointer;transition:all .15s;text-align:left;border-radius:5px;font-weight:600;}
     .abt:hover:not(:disabled){border-color:${clsColor};color:${clsColor};background:linear-gradient(135deg,rgba(25,20,10,0.95),rgba(15,12,6,0.9));box-shadow:0 0 10px ${clsColor}44;}
     .abt:disabled{opacity:0.3;cursor:not-allowed;}
-    .quiz-opt{font-family:'Crimson Text',serif;font-size:17px;background:linear-gradient(135deg,rgba(15,12,6,0.9),rgba(10,8,4,0.8));border:1.5px solid rgba(120,90,30,0.3);color:#d4b870;padding:13px 17px;cursor:pointer;transition:all .15s;border-radius:6px;text-align:left;width:100%;font-weight:500;}
+    .quiz-opt{font-family:'Crimson Text',serif;font-size:22px;background:linear-gradient(135deg,rgba(15,12,6,0.9),rgba(10,8,4,0.8));border:1.5px solid rgba(120,90,30,0.3);color:#d4b870;padding:18px 24px;cursor:pointer;transition:all .15s;border-radius:6px;text-align:left;width:100%;font-weight:500;line-height:1.5;}
     .quiz-opt:hover:not(:disabled){border-color:#f5c518;background:rgba(45,35,15,0.95);box-shadow:0 0 12px #f5c51844;}
     input.rin{font-family:'Crimson Text',serif;font-size:17px;background:rgba(255,255,255,0.15);border:1.5px solid rgba(245,197,24,0.5);color:#e8d5a0;padding:11px 14px;outline:none;border-radius:5px;width:100%;transition:all .2s;}
 input.rin::placeholder{color:rgba(232,213,160,0.6);} 
@@ -1907,7 +1953,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
   if(authLoading) return (
     <div style={{minHeight:"100vh",background:"#0a0806",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column"}}>
       <style>{G}</style>
-      <div className="cinzel" style={{fontSize:20,color:"#f5c518",marginBottom:20}}>⏳ Loading...</div>
+      <div className="cinzel" style={{fontSize:28,color:"#f5c518",marginBottom:20}}>⏳ Loading...</div>
       <div style={{width:40,height:40,border:"2px solid #f5c518",borderTop:"2px solid transparent",borderRadius:"50%",animation:"spin 1s linear infinite"}}/>
     </div>
   );
@@ -1924,13 +1970,13 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
       ))}
       
       <div style={{position:"relative",zIndex:10,display:"flex",flexDirection:"column",alignItems:"center",maxWidth:400,width:"100%"}}>
-        <div style={{fontSize:60,marginBottom:12,filter:"drop-shadow(0 0 20px #f5c51888)"}}>🔐</div>
-        <div className="cinzel-deco" style={{fontSize:32,fontWeight:700,color:"#f5c518",letterSpacing:4,marginBottom:8}}>OQUEST</div>
-        <div className="cinzel" style={{fontSize:12,color:"#e8d5a0",letterSpacing:6,marginBottom:24}}>LOGIN / SIGN UP</div>
+        <div style={{fontSize:72,marginBottom:12,filter:"drop-shadow(0 0 20px #f5c51888)"}}>🔐</div>
+        <div className="cinzel-deco" style={{fontSize:38,fontWeight:700,color:"#f5c518",letterSpacing:4,marginBottom:8}}>OQUEST</div>
+        <div className="cinzel" style={{fontSize:16,color:"#e8d5a0",letterSpacing:6,marginBottom:24}}>LOGIN / SIGN UP</div>
         
         <div style={{background:"rgba(0,0,0,0.6)",border:"2px solid rgba(245,197,24,0.45)",borderRadius:12,padding:24,width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.4)"}}>
           {authError && (
-            <div style={{background:"rgba(255,68,68,0.2)",border:"1px solid #ff4444",borderRadius:8,padding:12,marginBottom:16,color:"#ff8888",fontSize:13,textAlign:"center"}}>
+            <div style={{background:"rgba(255,68,68,0.2)",border:"1px solid #ff4444",borderRadius:8,padding:12,marginBottom:16,color:"#ff8888",fontSize:17,textAlign:"center"}}>
               {authError}
             </div>
           )}
@@ -1949,7 +1995,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 />
               </div>
               <div style={{marginBottom:20}}>
-                <label style={{display:"block",fontSize:11,color:"#f5c518",marginBottom:4,fontFamily:"Cinzel",letterSpacing:1}}>PASSWORD</label>
+                <label style={{display:"block",fontSize:15,color:"#f5c518",marginBottom:4,fontFamily:"Cinzel",letterSpacing:1}}>PASSWORD</label>
                 <input
                   type="password"
                   value={loginPassword}
@@ -1959,17 +2005,17 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                   className="rin"
                 />
               </div>
-              <button onClick={handleLogin} style={{width:"100%",padding:"12px 16px",background:"linear-gradient(135deg,#f5c518,#d4a410)",border:"none",borderRadius:6,color:"#0a0806",fontFamily:"Cinzel",fontSize:12,fontWeight:"bold",letterSpacing:2,cursor:"pointer",marginBottom:12,transition:"all 0.2s"}}>
+              <button onClick={handleLogin} style={{width:"100%",padding:"12px 16px",background:"linear-gradient(135deg,#f5c518,#d4a410)",border:"none",borderRadius:6,color:"#0a0806",fontFamily:"Cinzel",fontSize:16,fontWeight:"bold",letterSpacing:2,cursor:"pointer",marginBottom:12,transition:"all 0.2s"}}>
                 🔓 LOGIN
               </button>
-              <button onClick={() => setIsSignUp(true)} style={{width:"100%",padding:"10px 16px",background:"transparent",border:"1px solid rgba(245,197,24,0.5)",borderRadius:6,color:"#f5c518",fontFamily:"Cinzel",fontSize:11,letterSpacing:1,cursor:"pointer",transition:"all 0.2s"}}>
+              <button onClick={() => setIsSignUp(true)} style={{width:"100%",padding:"10px 16px",background:"transparent",border:"1px solid rgba(245,197,24,0.5)",borderRadius:6,color:"#f5c518",fontFamily:"Cinzel",fontSize:15,letterSpacing:1,cursor:"pointer",transition:"all 0.2s"}}>
                 Create New Account
               </button>
             </>
           ) : (
             <>
               <div style={{marginBottom:14}}>
-                <label style={{display:"block",fontSize:11,color:"#f5c518",marginBottom:4,fontFamily:"Cinzel",letterSpacing:1}}>CHARACTER NAME</label>
+                <label style={{display:"block",fontSize:15,color:"#f5c518",marginBottom:4,fontFamily:"Cinzel",letterSpacing:1}}>CHARACTER NAME</label>
                 <input
                   type="text"
                   value={signUpName}
@@ -1989,7 +2035,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 />
               </div>
               <div style={{marginBottom:20}}>
-                <label style={{display:"block",fontSize:11,color:"#f5c518",marginBottom:4,fontFamily:"Cinzel",letterSpacing:1}}>PASSWORD (min 6 chars)</label>
+                <label style={{display:"block",fontSize:15,color:"#f5c518",marginBottom:4,fontFamily:"Cinzel",letterSpacing:1}}>PASSWORD (min 6 chars)</label>
                 <input
                   type="password"
                   value={loginPassword}
@@ -1998,16 +2044,16 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                   className="rin"
                 />
               </div>
-              <button onClick={handleSignUp} style={{width:"100%",padding:"12px 16px",background:"linear-gradient(135deg,#4bfa7f,#2fd060)",border:"none",borderRadius:6,color:"#0a0806",fontFamily:"Cinzel",fontSize:12,fontWeight:"bold",letterSpacing:2,cursor:"pointer",marginBottom:12,transition:"all 0.2s"}}>
+              <button onClick={handleSignUp} style={{width:"100%",padding:"12px 16px",background:"linear-gradient(135deg,#4bfa7f,#2fd060)",border:"none",borderRadius:6,color:"#0a0806",fontFamily:"Cinzel",fontSize:16,fontWeight:"bold",letterSpacing:2,cursor:"pointer",marginBottom:12,transition:"all 0.2s"}}>
                 ✨ CREATE ACCOUNT
               </button>
-              <button onClick={() => setIsSignUp(false)} style={{width:"100%",padding:"10px 16px",background:"transparent",border:"1px solid rgba(75,250,127,0.5)",borderRadius:6,color:"#4bfa7f",fontFamily:"Cinzel",fontSize:11,letterSpacing:1,cursor:"pointer",transition:"all 0.2s"}}>
+              <button onClick={() => setIsSignUp(false)} style={{width:"100%",padding:"10px 16px",background:"transparent",border:"1px solid rgba(75,250,127,0.5)",borderRadius:6,color:"#4bfa7f",fontFamily:"Cinzel",fontSize:15,letterSpacing:1,cursor:"pointer",transition:"all 0.2s"}}>
                 Back to Login
               </button>
             </>
           )}
         </div>
-        <div className="crimson" style={{fontSize:12,color:"#e8d5a0",marginTop:20,textAlign:"center",lineHeight:1.6}}>
+        <div className="crimson" style={{fontSize:16,color:"#e8d5a0",marginTop:20,textAlign:"center",lineHeight:1.6}}>
           🔒 Secure login powered by Firebase<br/>
           ⚔️ Your progress saves to the cloud
         </div>
@@ -2038,11 +2084,11 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         <div key={i} style={{position:"fixed",left:l,top:t,width:80,height:80,borderRadius:"50%",background:`radial-gradient(${c}33,transparent 70%)`,animation:`orbFloat ${4+i*0.7}s ease-in-out infinite`,animationDelay:`${i*0.8}s`,pointerEvents:"none"}}/>
       ))}
 
-      <div style={{fontSize:72,marginBottom:6,animation:"float 3.5s ease-in-out infinite",filter:"drop-shadow(0 0 24px #f5c51888)",position:"relative",zIndex:1}}>⚔️</div>
+      <div style={{fontSize:88,marginBottom:6,animation:"float 3.5s ease-in-out infinite",filter:"drop-shadow(0 0 24px #f5c51888)",position:"relative",zIndex:1}}>⚔️</div>
       <div className="cinzel-deco" style={{fontSize:"clamp(22px,5.5vw,46px)",fontWeight:700,color:"#f5c518",letterSpacing:6,marginBottom:3,animation:"glow 3s ease-in-out infinite",textAlign:"center",position:"relative",zIndex:1}}>OQUEST</div>
       <div className="cinzel" style={{fontSize:"clamp(8px,1.8vw,13px)",color:"#e8d5a0",letterSpacing:10,marginBottom:6,textAlign:"center",position:"relative",zIndex:1}}>THE KERNEL CHRONICLES</div>
       <div style={{width:220,height:1,background:"linear-gradient(90deg,transparent,#f5c518,transparent)",marginBottom:22,position:"relative",zIndex:1}}/>
-      <div className="crimson" style={{fontSize:17,color:"#c8a870",textAlign:"center",maxWidth:500,lineHeight:2,marginBottom:8,fontStyle:"italic",position:"relative",zIndex:1}}>
+      <div className="crimson" style={{fontSize:22,color:"#c8a870",textAlign:"center",maxWidth:500,lineHeight:2,marginBottom:8,fontStyle:"italic",position:"relative",zIndex:1}}>
         "The OS realm fractures. Zombie processes haunt the Process Table. Deadlock Demons seize the mutex forests. A Kernel Panic stirs in the southern castle. You — a system warrior — must restore order."
       </div>
       <div style={{width:220,height:1,background:"linear-gradient(90deg,transparent,#f5c518,transparent)",marginBottom:24,position:"relative",zIndex:1}}/>
@@ -2052,8 +2098,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         <button className="btn btn-blue" onClick={()=>setScreen("leaderboard")}>⭐ Hall of Fame</button>
         <button className="btn btn-red" onClick={handleLogout} style={{fontSize:10}}>🚪 Logout</button>
       </div>
-      <div className="crimson" style={{fontSize:13,color:"#e8d5a0",letterSpacing:2,position:"relative",zIndex:1}}>WASD · E Interact · I Inventory · Q Quests</div>
-      {user && <div className="cinzel" style={{fontSize:10,color:"#8a6830",position:"absolute",top:12,right:12,zIndex:5}}>👤 {user.email}</div>}
+      <div className="crimson" style={{fontSize:17,color:"#e8d5a0",letterSpacing:2,position:"relative",zIndex:1}}>WASD · E Interact · I Inventory · Q Quests</div>
+      {user && <div className="cinzel" style={{fontSize:15,color:"#8a6830",position:"absolute",top:12,right:12,zIndex:5}}>👤 {user.email}</div>}
     </div>
   );
 
@@ -2066,16 +2112,16 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         {`::-webkit-scrollbar { width: 12px; } ::-webkit-scrollbar-track { background: rgba(0,0,0,0.5); border-radius: 10px; } ::-webkit-scrollbar-thumb { background: #f5c518; border-radius: 10px; } ::-webkit-scrollbar-thumb:hover { background: #ffd700; } .guide-content-scroll::-webkit-scrollbar { width: 12px; } .guide-content-scroll::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); border-radius: 10px; } .guide-content-scroll::-webkit-scrollbar-thumb { background: #f5c518; border-radius: 10px; } .guide-content-scroll::-webkit-scrollbar-thumb:hover { background: #ffd700; }`}
       </style>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",maxWidth:950,marginBottom:8}}>
-        <div className="cinzel-deco" style={{fontSize:20,fontWeight:700,color:"#f5c518",marginTop:12,marginBottom:4,letterSpacing:3}}>📖 ADVENTURER'S GUIDE</div>
+        <div className="cinzel-deco" style={{fontSize:26,fontWeight:700,color:"#f5c518",marginTop:12,marginBottom:4,letterSpacing:3}}>📖 ADVENTURER'S GUIDE</div>
         <div style={{display:"flex",gap:8}}>
-          <button className="btn" style={{color:"#8a6830",borderColor:"#5a4020",fontSize:9,padding:"4px 10px",marginTop:12}} onClick={()=>setScreen("title")}>← Back</button>
-          <button className="btn btn-red" onClick={handleLogout} style={{fontSize:9,padding:"4px 10px",marginTop:12}}>🚪 Logout</button>
+          <button className="btn" style={{color:"#8a6830",borderColor:"#5a4020",fontSize:13,padding:"4px 10px",marginTop:12}} onClick={()=>setScreen("title")}>← Back</button>
+          <button className="btn btn-red" onClick={handleLogout} style={{fontSize:13,padding:"4px 10px",marginTop:12}}>🚪 Logout</button>
         </div>
       </div>
-      <div className="crimson" style={{fontSize:16,color:"#8a6830",marginBottom:22,fontStyle:"italic"}}>Master the OS realm — knowledge is your greatest weapon</div>
+      <div className="crimson" style={{fontSize:21,color:"#8a6830",marginBottom:22,fontStyle:"italic"}}>Master the OS realm — knowledge is your greatest weapon</div>
       <div className="guide-content-scroll" style={{maxWidth:950,width:"100%",maxHeight:650,overflowY:"auto",paddingRight:8,marginBottom:24}}>
       <div className="guide-glossary" style={{maxWidth:950,width:"100%",marginBottom:20}}>
-        <div className="cinzel" style={{fontSize:17,color:"#4bfa7f",marginBottom:12,letterSpacing:2}}>📚 OS GLOSSARY & DEFINITIONS</div>
+        <div className="cinzel" style={{fontSize:22,color:"#4bfa7f",marginBottom:12,letterSpacing:2}}>📚 OS GLOSSARY & DEFINITIONS</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:12,marginBottom:24}}>
           {OS_GLOSSARY.map((item,i)=>(
             <div key={i} style={{background:"rgba(0,0,0,0.3)",border:"1px solid rgba(75,250,127,0.35)",borderRadius:6,padding:12}}>
@@ -2120,22 +2166,22 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
   if(screen==="charselect") return (
     <div style={{minHeight:"100vh",background:"radial-gradient(ellipse at 50% 30%,#6c5540,#32281d 70%)",padding:"22px 18px",display:"flex",flexDirection:"column",alignItems:"center",overflowY:"auto"}}>
       <style>{G}</style>
-      <div className="cinzel-deco" style={{fontSize:22,fontWeight:700,color:"#f5c518",marginTop:12,marginBottom:3,letterSpacing:3}}>Choose Your Class</div>
-      <div className="crimson" style={{fontSize:16,color:"#8a6830",marginBottom:22,fontStyle:"italic"}}>Each class wields different OS powers — choose your mastery</div>
+      <div className="cinzel-deco" style={{fontSize:26,fontWeight:700,color:"#f5c518",marginTop:12,marginBottom:3,letterSpacing:3}}>Choose Your Class</div>
+      <div className="crimson" style={{fontSize:21,color:"#8a6830",marginBottom:22,fontStyle:"italic"}}>Each class wields different OS powers — choose your mastery</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:12,maxWidth:940,width:"100%",marginBottom:22}}>
         {Object.entries(CLASSES).map(([id,c])=>(
           <div key={id} className={`cls-card${classChoice===id?" sel":""}`} onClick={()=>setClassChoice(id)}
             style={{borderColor:classChoice===id?c.color:"rgba(120,90,30,0.25)",boxShadow:classChoice===id?`0 0 20px ${c.color}44`:"none"}}>
-            <div style={{fontSize:36,marginBottom:8}}>{c.icon}</div>
-            <div className="cinzel" style={{fontSize:13,color:c.color,marginBottom:5,fontWeight:600,letterSpacing:1}}>{id}</div>
-            <div className="crimson" style={{fontSize:14,color:"#a09060",lineHeight:1.65,marginBottom:10,fontStyle:"italic",minHeight:40}}>
+            <div style={{fontSize:44,marginBottom:8}}>{c.icon}</div>
+            <div className="cinzel" style={{fontSize:18,color:c.color,marginBottom:5,fontWeight:600,letterSpacing:1}}>{id}</div>
+            <div className="crimson" style={{fontSize:18,color:"#a09060",lineHeight:1.65,marginBottom:10,fontStyle:"italic",minHeight:40}}>
               {id==="Scheduler"?"Master of Round-Robin, SJF & priority scheduling":id==="MemoryMage"?"Commands virtual memory, paging & heap allocation":id==="KernelKnight"?"Ring-0 warrior of syscalls & hardware interrupts":"Breaks deadlocks with Banker's Algorithm"}
             </div>
             <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
               {Object.entries({HP:c.stats.hp,MP:c.stats.mp,ATK:c.stats.atk,DEF:c.stats.def,SPD:c.stats.spd}).map(([k,v])=>(
                 <div key={k} style={{background:`${c.color}11`,border:`1px solid ${c.color}33`,padding:"2px 7px",borderRadius:10}}>
-                  <span className="cinzel" style={{fontSize:8,color:"#6a5030"}}>{k} </span>
-                  <span className="cinzel" style={{fontSize:10,color:c.color}}>{v}</span>
+                  <span className="cinzel" style={{fontSize:11,color:"#6a5030"}}>{k} </span>
+                  <span className="cinzel" style={{fontSize:13,color:c.color}}>{v}</span>
                 </div>
               ))}
             </div>
@@ -2147,12 +2193,12 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         ))}
       </div>
       <div style={{maxWidth:380,width:"100%",marginBottom:18}}>
-        <div className="cinzel" style={{fontSize:9,color:"#8a6830",letterSpacing:2,marginBottom:6}}>HERO NAME</div>
+        <div className="cinzel" style={{fontSize:13,color:"#8a6830",letterSpacing:2,marginBottom:6}}>HERO NAME</div>
         <input className="rin" placeholder="Enter your name..." value={nameInput} onChange={e=>setNameInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&startGame()}/>
       </div>
       <div style={{display:"flex",gap:12,flexWrap:"wrap",justifyContent:"center"}}>
         <button className="btn btn-gold" onClick={startGame} disabled={!classChoice||!nameInput.trim()} style={{opacity:!classChoice||!nameInput.trim()?0.35:1}}>Enter the Realm ⚔</button>
-        {hasSave&&classChoice&&<button className="btn btn-green" onClick={loadGameProgress} style={{fontSize:11}}>📂 Load Game</button>}
+        {hasSave&&classChoice&&<button className="btn btn-green" onClick={loadGameProgress} style={{fontSize:15}}>📂 Load Game</button>}
         <button className="btn btn-purple" onClick={()=>setScreen("guide")}>📖 Guide</button>
         <button className="btn" style={{color:"#8a6830",borderColor:"#5a4020"}} onClick={()=>setScreen("title")}>← Back</button>
         <button className="btn btn-red" onClick={handleLogout} style={{fontSize:10}}>🚪 Logout</button>
@@ -2167,14 +2213,14 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
   <div style={{minHeight:"100vh",background:"radial-gradient(ellipse at 50% 30%,#1a1208,#0a0806 70%)",padding:28,display:"flex",flexDirection:"column",alignItems:"center",overflowY:"auto"}}>
     <style>{G+`@keyframes livePulse{0%{opacity:1;transform:scale(1)}50%{opacity:0.5;transform:scale(1.2)}100%{opacity:1;transform:scale(1)}}`}</style>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",maxWidth:700,marginBottom:8}}>
-      <div className="cinzel-deco" style={{fontSize:20,fontWeight:700,color:"#f5c518",marginTop:16,letterSpacing:3,animation:"glow 3s ease-in-out infinite"}}>⭐ Hall of Fame</div>
+      <div className="cinzel-deco" style={{fontSize:26,fontWeight:700,color:"#f5c518",marginTop:16,letterSpacing:3,animation:"glow 3s ease-in-out infinite"}}>⭐ Hall of Fame</div>
       <div style={{display:"flex",alignItems:"center",gap:8,marginTop:16}}>
         <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 8px",background:"rgba(75,250,127,0.1)",border:"1px solid rgba(75,250,127,0.3)",borderRadius:4}}>
           <div style={{width:8,height:8,borderRadius:"50%",background:"#4bfa7f",animation:"livePulse 2s ease-in-out infinite"}}/>
-          <span className="cinzel" style={{fontSize:9,color:"#4bfa7f",letterSpacing:1}}>LIVE</span>
+          <span className="cinzel" style={{fontSize:13,color:"#4bfa7f",letterSpacing:1}}>LIVE</span>
         </div>
-        <button className="btn btn-green" onClick={refreshLeaderboard} style={{fontSize:8,padding:"4px 8px"}}>🔄</button>
-        <button className="btn btn-blue" style={{fontSize:8,padding:"4px 8px"}} onClick={()=>{
+        <button className="btn btn-green" onClick={refreshLeaderboard} style={{fontSize:11,padding:"4px 8px"}}>🔄</button>
+        <button className="btn btn-blue" style={{fontSize:11,padding:"4px 8px"}} onClick={()=>{
           // Filter to only completed runs with score > 0
           const exportData = leaderboard.filter(e => e.completed && e.score > 0);
           if(exportData.length === 0){ notify("No completed runs to export","#ff4444",2000); return; }
@@ -2201,18 +2247,18 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           URL.revokeObjectURL(url);
           notify("📥 Exported "+exportData.length+" records","#4bfa7f",2000);
         }}>📥 Export CSV</button>
-        <button className="btn btn-blue" style={{fontSize:8,padding:"4px 8px"}} onClick={exportLeaderboardPDF}>📄 Export PDF</button>
-        <button className="btn btn-red" onClick={handleLogout} style={{fontSize:9,padding:"4px 10px"}}>🚪 Logout</button>
+        <button className="btn btn-blue" style={{fontSize:11,padding:"4px 8px"}} onClick={exportLeaderboardPDF}>📄 Export PDF</button>
+        <button className="btn btn-red" onClick={handleLogout} style={{fontSize:13,padding:"4px 10px"}}>🚪 Logout</button>
       </div>
     </div>
-    <div className="crimson" style={{fontSize:16,color:"#8a6830",marginBottom:12,fontStyle:"italic"}}>Fastest realm progressors are crowned champions</div>
+    <div className="crimson" style={{fontSize:21,color:"#8a6830",marginBottom:12,fontStyle:"italic"}}>Fastest realm progressors are crowned champions</div>
     {lastUpdateTime&&(
-      <div className="cinzel" style={{fontSize:9,color:"#8a6830",marginBottom:8}}>
+      <div className="cinzel" style={{fontSize:13,color:"#8a6830",marginBottom:8}}>
         🕐 Last updated: {lastUpdateTime.toLocaleTimeString()}
       </div>
     )}
     <div className="panel" style={{padding:"12px 16px",marginBottom:20,borderRadius:6,textAlign:"center",borderColor:"rgba(75,250,127,0.2)"}}>
-      <div className="cinzel" style={{fontSize:10,color:"#4bfa7f",letterSpacing:2}}>⏱️ RANKED BY COMPLETION TIME · FINISHED RUNS ONLY</div>
+      <div className="cinzel" style={{fontSize:15,color:"#4bfa7f",letterSpacing:2}}>⏱️ RANKED BY COMPLETION TIME · FINISHED RUNS ONLY</div>
     </div>
     <style>{`.leaderboard-scroll { scrollbar-width: thin; } .leaderboard-scroll::-webkit-scrollbar{width:10px;} .leaderboard-scroll::-webkit-scrollbar-thumb{background:rgba(245,197,24,0.12);border-radius:6px;} .leaderboard-scroll::-webkit-scrollbar-track{background:transparent;}`}</style>
     <div className="leaderboard-scroll" style={{maxWidth:680,width:"100%",marginBottom:24,maxHeight:'56vh',overflowY:'auto',paddingRight:8}}>
@@ -2220,7 +2266,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         // Only show players who completed the game (boss defeated + both lessons done) with score > 0
         const finishedRecords = leaderboard.filter(e => e.completed === true && (e.score||0) > 0);
         if(finishedRecords.length === 0) return (
-          <div className="panel crimson" style={{padding:40,textAlign:"center",color:"#5a4020",fontSize:20,borderRadius:8,fontStyle:"italic"}}>No completed runs yet. Be the first to finish!</div>
+          <div className="panel crimson" style={{padding:40,textAlign:"center",color:"#5a4020",fontSize:26,borderRadius:8,fontStyle:"italic"}}>No completed runs yet. Be the first to finish!</div>
         );
         return finishedRecords.map((e,i)=>{
           const medals=["🥇","🥈","🥉"];
@@ -2299,10 +2345,10 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           {["⭐","✨","🏆","💫","🎉","💎"][i%6]}
         </div>
       ))}
-      <div style={{fontSize:76,marginBottom:12,animation:"victoryPulse 1.5s ease-in-out infinite"}}>🏆</div>
-      <div className="cinzel-deco" style={{fontSize:22,fontWeight:700,color:"#f5c518",marginBottom:8,letterSpacing:3,animation:"glow 2s ease-in-out infinite",textAlign:"center"}}>KERNEL PANIC DEFEATED!</div>
-      <div className="crimson" style={{fontSize:19,color:"#c8a870",marginBottom:10,fontStyle:"italic",textAlign:"center"}}>Order has been restored to the OS realm.</div>
-      <div className="crimson" style={{fontSize:16,color:"#8a6830",maxWidth:460,textAlign:"center",lineHeight:1.9,marginBottom:28,fontStyle:"italic"}}>
+      <div style={{fontSize:92,marginBottom:12,animation:"victoryPulse 1.5s ease-in-out infinite"}}>🏆</div>
+      <div className="cinzel-deco" style={{fontSize:28,fontWeight:700,color:"#f5c518",marginBottom:8,letterSpacing:3,animation:"glow 2s ease-in-out infinite",textAlign:"center"}}>KERNEL PANIC DEFEATED!</div>
+      <div className="crimson" style={{fontSize:22,color:"#c8a870",marginBottom:10,fontStyle:"italic",textAlign:"center"}}>Order has been restored to the OS realm.</div>
+      <div className="crimson" style={{fontSize:20,color:"#8a6830",maxWidth:460,textAlign:"center",lineHeight:1.9,marginBottom:28,fontStyle:"italic"}}>
         "The processes are free. The memory breathes again. The scheduler resumes its eternal round-robin. You — Kernel Master — have proven your OS mastery."
       </div>
       <div className="panel" style={{padding:"20px 40px",textAlign:"center",marginBottom:28,borderRadius:10}}>
@@ -2351,8 +2397,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               animation:"floatSlow 3s ease-in-out infinite",boxShadow:"0 0 30px rgba(200,165,80,0.1)"}}>
               <CharSprite role={activeNPC.role} size={86} tick={animFrame}/>
             </div>
-            <div className="cinzel" style={{fontSize:13,color:"#f5c518",letterSpacing:2}}>{activeNPC.name}</div>
-            <div className="crimson" style={{fontSize:14,color:"#7a6040",fontStyle:"italic",textTransform:"capitalize"}}>{activeNPC.role}</div>
+            <div className="cinzel" style={{fontSize:18,color:"#f5c518",letterSpacing:2}}>{activeNPC.name}</div>
+            <div className="crimson" style={{fontSize:18,color:"#7a6040",fontStyle:"italic",textTransform:"capitalize"}}>{activeNPC.role}</div>
 
             {/* Quest status badge */}
             {qDef&&(
@@ -2373,29 +2419,29 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                     transition:"background 0.3s",boxShadow:i===dlgIdx?"0 0 6px #f5c51888":"none"}}/>
                 ))}
               </div>
-              <div className="crimson" style={{fontSize:19,color:"#e8d5a0",lineHeight:1.9,marginBottom:20,minHeight:60}}>
+              <div className="crimson" style={{fontSize:24,color:"#e8d5a0",lineHeight:1.9,marginBottom:20,minHeight:60}}>
                 "{activeNPC.dialogue[dlgIdx]}"
               </div>
 
               {/* OS Lore box for quests */}
               {qDef&&dlgIdx===activeNPC.dialogue.length-1&&!doneQ&&(
                 <div style={{background:"rgba(200,165,80,0.06)",border:"1px solid rgba(200,165,80,0.15)",borderRadius:6,padding:"12px 14px",marginBottom:16}}>
-                  <div className="cinzel" style={{fontSize:8,color:"#f5c518",letterSpacing:2,marginBottom:6}}>📚 OS CONCEPT</div>
-                  <div className="crimson" style={{fontSize:14,color:"#a09060",lineHeight:1.7,fontStyle:"italic"}}>{qDef.lore}</div>
+                  <div className="cinzel" style={{fontSize:11,color:"#f5c518",letterSpacing:2,marginBottom:6}}>📚 OS CONCEPT</div>
+                  <div className="crimson" style={{fontSize:17,color:"#a09060",lineHeight:1.7,fontStyle:"italic"}}>{qDef.lore}</div>
                   <div style={{marginTop:8,display:"flex",gap:6,alignItems:"center"}}>
                     <span className="tag" style={{background:"rgba(200,75,250,0.1)",color:"#c84bfa",border:"1px solid #c84bfa33"}}>{qDef.category}</span>
-                    <span className="crimson" style={{fontSize:13,color:"#7a6040"}}>+{qDef.reward.xp} XP · +{qDef.reward.gold} 🪙</span>
+                    <span className="crimson" style={{fontSize:16,color:"#7a6040"}}>+{qDef.reward.xp} XP · +{qDef.reward.gold} 🪙</span>
                   </div>
                 </div>
               )}
 
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div className="crimson" style={{fontSize:13,color:"#4a3828"}}>{dlgIdx+1}/{activeNPC.dialogue.length}</div>
+                <div className="crimson" style={{fontSize:16,color:"#4a3828"}}>{dlgIdx+1}/{activeNPC.dialogue.length}</div>
                 <div style={{display:"flex",gap:8}}>
                   {dlgIdx<activeNPC.dialogue.length-1?(
-                    <button className="btn btn-gold" style={{padding:"7px 18px",fontSize:10}} onClick={advanceDlg}>Continue ▶</button>
+                    <button className="btn btn-gold" style={{padding:"7px 18px",fontSize:13}} onClick={advanceDlg}>Continue ▶</button>
                   ):(
-                    <button className="btn btn-gold" style={{padding:"7px 18px",fontSize:10}} onClick={closeDialogue}>Close ✕</button>
+                    <button className="btn btn-gold" style={{padding:"7px 18px",fontSize:13}} onClick={closeDialogue}>Close ✕</button>
                   )}
                 </div>
               </div>
@@ -2405,8 +2451,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             {activeQ&&!doneQ&&(
               <div className="panel" style={{padding:"12px 16px",borderRadius:8,marginTop:10,borderColor:"rgba(200,75,250,0.2)"}}>
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
-                  <div className="cinzel" style={{fontSize:10,color:"#c84bfa"}}>📜 {activeQ.title}</div>
-                  <div className="cinzel" style={{fontSize:9,color:"#7a6040"}}>{activeQ.progress}/{activeQ.target}</div>
+                  <div className="cinzel" style={{fontSize:13,color:"#c84bfa"}}>📜 {activeQ.title}</div>
+                  <div className="cinzel" style={{fontSize:12,color:"#7a6040"}}>{activeQ.progress}/{activeQ.target}</div>
                 </div>
                 <div style={{height:5,background:"rgba(255,255,255,0.4)",borderRadius:3,overflow:"hidden",border:"1px solid rgba(200,75,250,0.15)"}}>
                   <div style={{height:"100%",width:`${Math.min(100,(activeQ.progress/activeQ.target)*100)}%`,
@@ -2420,13 +2466,13 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
         {/* Bottom bar */}
         <div style={{background:"rgba(0,0,0,0.75)",borderTop:"1px solid rgba(200,165,80,0.12)",padding:"8px 16px",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-          <button className="btn" style={{color:"#7a6040",borderColor:"#3a2010",padding:"5px 14px",fontSize:9}} onClick={closeDialogue}>← Return to World</button>
-          <button className="btn btn-purple" style={{padding:"5px 12px",fontSize:9}} onClick={()=>{setQuiz(QUIZZES[Math.floor(Math.random()*QUIZZES.length)]);setQuizPick(null);setQuizCtx("explore");closeDialogue();setTimeout(()=>setScreen("quiz"),50);}}>📚 Quiz (+XP)</button>
+          <button className="btn" style={{color:"#7a6040",borderColor:"#3a2010",padding:"5px 14px",fontSize:13}} onClick={closeDialogue}>← Return to World</button>
+          <button className="btn btn-purple" style={{padding:"5px 12px",fontSize:13}} onClick={()=>{setQuiz(QUIZZES[Math.floor(Math.random()*QUIZZES.length)]);setQuizPick(null);setQuizCtx("explore");closeDialogue();setTimeout(()=>setScreen("quiz"),50);}}>📚 Quiz (+XP)</button>
           {bossSummoned&&!completedQuests.includes("q_kernel")&&(
-            <button className="btn btn-red" style={{padding:"5px 12px",fontSize:9,animation:"pulseFast 1s infinite"}} onClick={()=>{closeDialogue();setTimeout(triggerBossFight,200);}}>💀 Face the Boss!</button>
+            <button className="btn btn-red" style={{padding:"5px 12px",fontSize:13,animation:"pulseFast 1s infinite"}} onClick={()=>{closeDialogue();setTimeout(triggerBossFight,200);}}>💀 Face the Boss!</button>
           )}
           <div style={{flex:1}}/>
-          <div className="cinzel" style={{fontSize:8,color:"#5a4020"}}>Lv.{statsUI.level} · {statsUI.xp} XP · ⭐{statsUI.score.toLocaleString()}</div>
+          <div className="cinzel" style={{fontSize:11,color:"#5a4020"}}>Lv.{statsUI.level} · {statsUI.xp} XP · ⭐{statsUI.score.toLocaleString()}</div>
         </div>
       </div>
     );
@@ -2440,21 +2486,21 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
       <style>{G}</style>
       {/* Floating runes */}
       {Array.from({length:6}).map((_,i)=>(
-        <div key={i} style={{position:"fixed",left:`${10+i*16}%`,top:`${15+i%3*30}%`,fontSize:20,opacity:0.08,
+        <div key={i} style={{position:"fixed",left:`${10+i*16}%`,top:`${15+i%3*30}%`,fontSize:26,opacity:0.08,
           animation:`orbFloat ${3+i*0.5}s ease-in-out infinite`,animationDelay:`${i*0.6}s`,pointerEvents:"none",color:"#c84bfa"}}>
           {["⚙","📀","🧮","💻","🔧","⚡"][i]}
         </div>
       ))}
-      <div style={{maxWidth:660,width:"100%"}}>
-        <div className="cinzel" style={{fontSize:10,color:"#c84bfa",letterSpacing:4,textAlign:"center",marginBottom:6}}>
+      <div style={{maxWidth:860,width:"90vw",padding:"48px 56px"}}>
+        <div className="cinzel" style={{fontSize:20,color:"#c84bfa",letterSpacing:3,textAlign:"center",marginBottom:6}}>
           📚 OS KNOWLEDGE QUIZ {quiz.type==="multiple"?"(Multiple Choice)":quiz.type==="riddle"?"(Riddle)":"(Fill-in-the-Blank)"}
         </div>
-        <div className="cinzel-deco" style={{fontSize:18,fontWeight:700,color:"#f5c518",textAlign:"center",marginBottom:3}}>Prove Your Mastery</div>
-        <div className="crimson" style={{fontSize:15,color:"#8a6830",textAlign:"center",marginBottom:24,fontStyle:"italic"}}>
+        <div className="cinzel-deco" style={{fontSize:46,fontWeight:700,color:"#f5c518",textAlign:"center",marginBottom:3}}>Prove Your Mastery</div>
+        <div className="crimson" style={{fontSize:26,color:"#8a6830",textAlign:"center",marginBottom:24,fontStyle:"italic"}}>
           +{quiz.xp} XP for correct{quizCtx==="battle"?" · correct answer deals bonus damage":""}
         </div>
         <div className="panel" style={{padding:26,borderRadius:10,marginBottom:14,boxShadow:"0 8px 40px rgba(0,0,0,0.6)"}}>
-          <div className="crimson" style={{fontSize:20,color:"#e8d5a0",lineHeight:1.8,marginBottom:22}}>{quiz.q}</div>
+          <div className="crimson" style={{fontSize:30,color:"#e8d5a0",lineHeight:1.6,marginBottom:32}}>{quiz.q}</div>
           
           {/* MULTIPLE CHOICE */}
           {quiz.type==="multiple"&&(
@@ -2470,7 +2516,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                   <button key={i} className="quiz-opt" disabled={quizPick!==null} onClick={()=>answerQuiz(i)}
                     style={{borderColor:bc,background:bg,color:cc,transition:"all 0.22s",
                       boxShadow:quizPick!==null&&i===quiz.ans?`0 0 12px ${bc}66`:"none"}}>
-                    <span style={{opacity:0.5,marginRight:10,fontFamily:"'Cinzel',serif",fontSize:11}}>{String.fromCharCode(65+i)}.</span>{opt}
+                    <span style={{opacity:0.5,marginRight:10,fontFamily:"'Cinzel',serif",fontSize:22}}>{String.fromCharCode(65+i)}.</span>{opt}
                   </button>
                 );
               })}
@@ -2487,7 +2533,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 onChange={(e)=>setQuiz({...quiz, userAns: e.target.value})}
                 onKeyPress={(e)=>e.key==="Enter"&&quizPick===null&&answerQuiz(quiz.userAns)}
                 disabled={quizPick!==null}
-                style={{width:"100%",padding:"12px 14px",fontSize:16,background:"rgba(10,8,6,0.88)",
+                style={{width:"100%",padding:"12px 14px",fontSize:19,background:"rgba(10,8,6,0.88)",
                   border:"1px solid rgba(120,90,30,0.3)",borderRadius:6,color:"#d4b870",
                   fontFamily:"'Crimson Text',serif",marginBottom:12}}
               />
@@ -2495,7 +2541,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 onClick={()=>answerQuiz(quiz.userAns)}
                 disabled={quizPick!==null}
                 style={{width:"100%",padding:"10px 14px",background:"#c84bfa",color:"white",border:"none",
-                  borderRadius:6,fontSize:15,fontWeight:"bold",cursor:quizPick===null?"pointer":"not-allowed",
+                  borderRadius:6,fontSize:18,fontWeight:"bold",cursor:quizPick===null?"pointer":"not-allowed",
                   opacity:quizPick===null?1:0.5,transition:"all 0.2s"}}
               >
                 Submit Answer
@@ -2508,19 +2554,19 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               background:quizPick===quiz.ans||quizPick==="correct"?"rgba(8,35,18,0.8)":"rgba(35,8,8,0.8)",
               border:`1px solid ${quizPick===quiz.ans||quizPick==="correct"?"#4bfa7f":"#ff4444"}`,borderRadius:7,animation:"fadeUp 0.3s ease",
               boxShadow:quizPick===quiz.ans||quizPick==="correct"?"0 0 16px rgba(75,250,127,0.15)":"0 0 16px rgba(255,68,68,0.15)"}}>
-              <div className="crimson" style={{fontSize:17,color:quizPick===quiz.ans||quizPick==="correct"?"#4bfa7f":"#ff8888",lineHeight:1.75}}>
+              <div className="crimson" style={{fontSize:20,color:quizPick===quiz.ans||quizPick==="correct"?"#4bfa7f":"#ff8888",lineHeight:1.75}}>
                 {quizPick===quiz.ans||quizPick==="correct"?"✅ Correct! — ":"❌ Wrong — "}{quiz.explain}
               </div>
               {(quizPick!==quiz.ans&&quizPick!=="correct"&&(quiz.type==="fillblank"||quiz.type==="riddle"))&&(
-                <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(255,68,68,0.3)",fontSize:14,color:"#ffaa88",lineHeight:1.6}}>
-                  <span style={{color:"#ffaa88",fontSize:13}}>📝 Correct Answer: </span>
-                  <span style={{fontWeight:"bold",textDecoration:"underline",color:"#ffcc99",fontSize:15,fontFamily:"'Courier New',monospace",letterSpacing:0.5}}>
+                <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid rgba(255,68,68,0.3)",fontSize:17,color:"#ffaa88",lineHeight:1.6}}>
+                  <span style={{color:"#ffaa88",fontSize:16}}>📝 Correct Answer: </span>
+                  <span style={{fontWeight:"bold",textDecoration:"underline",color:"#ffcc99",fontSize:18,fontFamily:"'Courier New',monospace",letterSpacing:0.5}}>
                     {quiz.ans}
                   </span>
                 </div>
               )}
               {(quizPick===quiz.ans||quizPick==="correct")&&(
-                <div className="cinzel" style={{fontSize:9,color:"#f5c518",marginTop:8,letterSpacing:1}}>+{quiz.xp} XP EARNED</div>
+                <div className="cinzel" style={{fontSize:12,color:"#f5c518",marginTop:8,letterSpacing:1}}>+{quiz.xp} XP EARNED</div>
               )}
             </div>
           )}
@@ -2553,12 +2599,12 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
         {/* Header HUD */}
         <div style={{background:"rgba(0,0,0,0.85)",borderBottom:`1px solid ${isBoss?"rgba(255,0,50,0.25)":"rgba(200,165,80,0.12)"}`,padding:"6px 16px",display:"flex",gap:16,alignItems:"center",flexShrink:0}}>
-          <div className="cinzel" style={{fontSize:10,color:isBoss?"#ff2244":"#ff6060",letterSpacing:3,animation:isBoss?"glow 1.5s ease-in-out infinite":"none"}}>{isBoss?"💀 BOSS BATTLE":"⚔ BATTLE"}</div>
-          {isBoss&&<div className="cinzel" style={{fontSize:8,color:"#ff8888"}}>PHASE {bossPhase+1}/4</div>}
+          <div className="cinzel" style={{fontSize:13,color:isBoss?"#ff2244":"#ff6060",letterSpacing:3,animation:isBoss?"glow 1.5s ease-in-out infinite":"none"}}>{isBoss?"💀 BOSS BATTLE":"⚔ BATTLE"}</div>
+          {isBoss&&<div className="cinzel" style={{fontSize:11,color:"#ff8888"}}>PHASE {bossPhase+1}/4</div>}
           <div style={{flex:1}}/>
-          <div className="cinzel" style={{fontSize:8,color:clsColor}}>{cls.icon} Lv.{statsUI.level}</div>
-          <div className="cinzel" style={{fontSize:8,color:"#f5c518"}}>⭐{statsUI.score.toLocaleString()}</div>
-          <div className="cinzel" style={{fontSize:8,color:"#f5c518"}}>🪙{statsUI.gold}</div>
+          <div className="cinzel" style={{fontSize:11,color:clsColor}}>{cls.icon} Lv.{statsUI.level}</div>
+          <div className="cinzel" style={{fontSize:11,color:"#f5c518"}}>⭐{statsUI.score.toLocaleString()}</div>
+          <div className="cinzel" style={{fontSize:11,color:"#f5c518"}}>🪙{statsUI.gold}</div>
         </div>
 
         <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr",gridTemplateRows:"1fr auto",overflow:"hidden",minHeight:0}}>
@@ -2566,35 +2612,37 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           <div style={{background:isBoss?"linear-gradient(180deg,rgba(100,0,18,0.55),rgba(60,0,8,0.2))":"linear-gradient(180deg,rgba(70,8,8,0.4),transparent)",
             display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:18,gap:12,
             borderRight:`1px solid ${isBoss?"rgba(255,0,50,0.18)":"rgba(200,165,80,0.08)"}`}}>
-            {/* HP bar */}
-            <div style={{width:"100%",maxWidth:280}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                <div className="cinzel" style={{fontSize:11,color:battle.color,animation:isBoss?"glow 2s ease-in-out infinite":"none"}}>{battle.name}</div>
-                <div className="cinzel" style={{fontSize:8,color:"#6a5030"}}>{Math.max(0,enemyHP)}/{enemyMaxHP}</div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+              {/* Name always above sprite */}
+              <div className="cinzel" style={{fontSize:isBoss?20:16,color:battle.color,fontWeight:700,
+                animation:isBoss?"glow 2s ease-in-out infinite":"none",
+                textShadow:`0 0 14px ${battle.color}99`,textAlign:"center"}}>
+                {battle.name}
               </div>
-              <div className="hud-bar" style={{height:isBoss?14:10,borderColor:isBoss?"rgba(255,0,50,0.35)":"rgba(200,80,80,0.22)"}}>
-                <div style={{height:"100%",width:`${pct*100}%`,background:`linear-gradient(90deg,${battle.color},${battle.color}99)`,
-                  transition:"width 0.5s ease",boxShadow:isBoss?`0 0 12px ${battle.color}`:`0 0 6px ${battle.color}66`}}/>
+              {/* Enemy sprite with HP at top */}
+              <div style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center"}}>
+                {/* HP at top of head */}
+                <div style={{position:"absolute",top:-8,left:"50%",transform:"translateX(-50%)",
+                  background:"rgba(0,0,0,0.65)",padding:"3px 10px",borderRadius:6,
+                  border:"1px solid #c43",zIndex:10}}>
+                  <div className="cinzel" style={{fontSize:14,color:"#f88",fontWeight:700,textAlign:"center",whiteSpace:"nowrap"}}>
+                    {Math.max(0,enemyHP)}/{enemyMaxHP}
+                  </div>
+                </div>
+                {/* Sprite with animation */}
+                <div style={{animation:battleAnim==="enemy-hit"?"shake 0.35s ease":"none",
+                  filter:battleAnim==="enemy-hit"?"drop-shadow(0 0 18px #ff4444)":isBoss?"drop-shadow(0 0 22px #ff2244)":"none"}}>
+                  <CharSprite role={enemyRole} flash={battleAnim==="enemy-hit"} size={isBoss?180:150} tick={animFrame}/>
+                </div>
               </div>
-              {isBoss&&(
-                <div style={{display:"flex",gap:3,marginTop:5}}>
-                  {BOSS.phases.map((_,i)=>(
-                    <div key={i} style={{flex:1,height:3,borderRadius:2,background:bossPhase>i?"#ff2244":"rgba(255,0,50,0.18)",boxShadow:bossPhase>i?"0 0 4px #ff2244":"none"}}/>
-                  ))}
+              <div className="crimson" style={{fontSize:14,color:"#6a5030",fontStyle:"italic",
+                textAlign:"center",maxWidth:220,lineHeight:1.6}}>{battle.desc}</div>
+              {isBoss&&bossPhase>0&&(
+                <div className="cinzel" style={{fontSize:9,color:"#ff4444",letterSpacing:1,animation:"pulseFast 1s infinite"}}>
+                  ⚠ ENRAGED — ATK +{bossPhase*8}
                 </div>
               )}
             </div>
-
-            {/* Enemy sprite */}
-            <div style={{animation:battleAnim==="enemy-hit"?"shake 0.35s ease":"none",
-              filter:battleAnim==="enemy-hit"?"drop-shadow(0 0 18px #ff4444)":isBoss?"drop-shadow(0 0 22px #ff2244)":"none"}}>
-              <CharSprite role={enemyRole} flash={battleAnim==="enemy-hit"} size={isBoss?108:88} tick={animFrame}/>
-            </div>
-
-            <div className="crimson" style={{fontSize:14,color:"#6a5030",fontStyle:"italic",textAlign:"center",maxWidth:220,lineHeight:1.6}}>{battle.desc}</div>
-            {isBoss&&bossPhase>0&&(
-              <div className="cinzel" style={{fontSize:8,color:"#ff4444",letterSpacing:1,animation:"pulseFast 1s infinite"}}>⚠ ENRAGED — ATK +{bossPhase*8}</div>
-            )}
           </div>
 
           {/* Player side */}
@@ -2602,25 +2650,25 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             {/* Stats bars */}
             <div style={{width:"100%",maxWidth:280}}>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                <div className="cinzel" style={{fontSize:11,color:clsColor}}>{playerName}</div>
-                <div className="cinzel" style={{fontSize:8,color:"#6a5030"}}>Lv.{statsUI.level}</div>
+                <div className="cinzel" style={{fontSize:15,color:clsColor}}>{playerName}</div>
+                <div className="cinzel" style={{fontSize:11,color:"#6a5030"}}>Lv.{statsUI.level}</div>
               </div>
               {[["HP",statsUI.hp,statsUI.maxHp,"#ff8888","rgba(200,80,80,0.22)",statsUI.hp>statsUI.maxHp*0.5?"#40c040":statsUI.hp>statsUI.maxHp*0.25?"#d0a020":"#c02020"],
                 ["MP",statsUI.mp,statsUI.maxMp,"#88aaff","rgba(80,80,200,0.22)","#3060d0"]].map(([lbl,v,mx,lc,bc,bg])=>(
                 <div key={lbl} style={{marginBottom:5}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
-                    <span className="cinzel" style={{fontSize:8,color:lc}}>{lbl}</span>
-                    <span className="cinzel" style={{fontSize:8,color:"#6a5030"}}>{v}/{mx}</span>
+                    <span className="cinzel" style={{fontSize:11,color:lc}}>{lbl}</span>
+                    <span className="cinzel" style={{fontSize:11,color:"#6a5030"}}>{v}/{mx}</span>
                   </div>
-                  <div className="hud-bar" style={{height:9,borderColor:bc}}>
+                  <div className="hud-bar" style={{height:14,borderColor:bc}}>
                     <div style={{height:"100%",width:`${(v/mx)*100}%`,background:bg,transition:"width 0.5s ease",boxShadow:`0 0 6px ${bg}66`}}/>
                   </div>
                 </div>
               ))}
               <div style={{marginTop:4}}>
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
-                  <span className="cinzel" style={{fontSize:8,color:"#f5c518"}}>XP</span>
-                  <span className="cinzel" style={{fontSize:8,color:"#6a5030"}}>{statsUI.xp}</span>
+                  <span className="cinzel" style={{fontSize:11,color:"#f5c518"}}>XP</span>
+                  <span className="cinzel" style={{fontSize:11,color:"#6a5030"}}>{statsUI.xp}</span>
                 </div>
                 <div className="hud-bar" style={{height:5}}>
                   <div style={{height:"100%",width:`${Math.min(100,((statsUI.xp-xpToNext(statsUI.level-1))/(xpToNext(statsUI.level)-xpToNext(statsUI.level-1)))*100)}%`,
@@ -2632,9 +2680,9 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             {/* Player sprite */}
             <div style={{animation:battleAnim==="player-hit"?"shake 0.35s ease":"none",
               filter:battleAnim==="player-hit"?"drop-shadow(0 0 18px #ff4444)":"none"}}>
-              <CharSprite role="player" color={clsColor} flash={battleAnim==="player-hit"} size={88} tick={animFrame} facing={2}/>
+              <CharSprite role="player" color={clsColor} flash={battleAnim==="player-hit"} size={150} tick={animFrame} facing={2}/>
             </div>
-            <div className="cinzel" style={{fontSize:10,color:clsColor,letterSpacing:2}}>{cls.icon} {classChoice}</div>
+            <div className="cinzel" style={{fontSize:28,color:clsColor,letterSpacing:2,marginTop:12}}>{cls.icon} {classChoice}</div>
           </div>
 
           {/* Bottom panel */}
@@ -2642,45 +2690,45 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             display:"grid",gridTemplateColumns:"1fr 1fr",overflow:"hidden",maxHeight:"42vh",flexShrink:0}}>
             {/* Battle log */}
             <div style={{padding:"10px 14px",borderRight:"1px solid rgba(200,165,80,0.08)",overflowY:"auto"}} ref={logRef}>
-              <div className="cinzel" style={{fontSize:8,color:"#6a5030",letterSpacing:3,marginBottom:7}}>BATTLE LOG</div>
+              <div className="cinzel" style={{fontSize:11,color:"#6a5030",letterSpacing:3,marginBottom:7}}>BATTLE LOG</div>
               {battleLog.map((l,i)=>(
-                <div key={i} className="crimson" style={{fontSize:14,lineHeight:1.55,marginBottom:2,animation:"fadeUp 0.18s ease",
+                <div key={i} className="crimson" style={{fontSize:22,lineHeight:1.7,marginBottom:4,animation:"fadeUp 0.18s ease",
                   color:l.startsWith("⚔")||l.startsWith("✨")||l.startsWith("🗡")?clsColor:
                     l.startsWith("💀")&&!l.includes("THE")?"#ff8888":
                     l.startsWith("🎉")?"#4bfa7f":
                     l.startsWith("📚")?"#c84bfa":
                     l.startsWith("🔥")||l.startsWith("⚠")||l.includes("KERNEL PANIC")?"#ff4444":"#c0a060"}}>{l}</div>
               ))}
-              {battlePhase==="wait"&&<div className="crimson" style={{fontSize:14,color:"#5a4020",fontStyle:"italic",animation:"pulse 0.8s infinite"}}>...</div>}
+              {battlePhase==="wait"&&<div className="crimson" style={{fontSize:18,color:"#5a4020",fontStyle:"italic",animation:"pulse 0.8s infinite"}}>...</div>}
             </div>
 
             {/* Action buttons */}
             <div style={{padding:"10px 14px",overflowY:"auto"}}>
               {battlePhase==="player"?(
                 <>
-                  <div className="cinzel" style={{fontSize:8,color:"#6a5030",letterSpacing:3,marginBottom:7}}>ACTIONS</div>
+                  <div className="cinzel" style={{fontSize:16,color:"#6a5030",letterSpacing:3,marginBottom:7}}>ACTIONS</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginBottom:8}}>
                     <button className="abt" onClick={()=>doAttack("basic")} style={{borderColor:"rgba(200,165,80,0.25)"}}>⚔ Attack</button>
                     <button className="abt" onClick={doQuizInBattle} style={{borderColor:"rgba(200,75,250,0.3)",color:"#c84bfa"}}>📚 Quiz Strike</button>
                     {!isBoss&&<button className="abt" onClick={doFlee} style={{color:"#7a6040",borderColor:"rgba(120,90,30,0.2)"}}>💨 Flee</button>}
                   </div>
-                  <div className="cinzel" style={{fontSize:8,color:"#6a5030",letterSpacing:3,marginBottom:5}}>ABILITIES · MP {statsUI.mp}/{statsUI.maxMp}</div>
+                  <div className="cinzel" style={{fontSize:16,color:"#6a5030",letterSpacing:3,marginBottom:5}}>ABILITIES · MP {statsUI.mp}/{statsUI.maxMp}</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginBottom:8}}>
                     {cls.abilities.map(ab=>(
                       <button key={ab.name} className="abt" onClick={()=>doAttack("ability",ab)} disabled={statsUI.mp<ab.mpCost}>
-                        <div style={{color:clsColor,fontSize:9,marginBottom:1,fontWeight:600}}>{ab.name}</div>
-                        <div style={{fontSize:8,color:"#5a4020"}}>{ab.mpCost}mp · {ab.dmg[0]}–{ab.dmg[1]}</div>
+                        <div style={{color:clsColor,fontSize:16,marginBottom:2,fontWeight:600}}>{ab.name}</div>
+                        <div style={{fontSize:14,color:"#5a4020"}}>{ab.mpCost}mp · {ab.dmg[0]}–{ab.dmg[1]}</div>
                       </button>
                     ))}
                   </div>
                   {inventory.length>0&&(
                     <>
-                      <div className="cinzel" style={{fontSize:8,color:"#6a5030",letterSpacing:3,marginBottom:5}}>ITEMS</div>
+                      <div className="cinzel" style={{fontSize:16,color:"#6a5030",letterSpacing:3,marginBottom:5}}>ITEMS</div>
                       <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
                         {inventory.map(item=>(
                           <button key={item.id} className="abt" onClick={()=>doItem(item)} style={{display:"flex",alignItems:"center",gap:4}}>
                             <span style={{fontSize:13}}>{item.icon}</span>
-                            <span className="crimson" style={{fontSize:12,color:"#c8a870"}}>{item.name} ×{item.qty}</span>
+                            <span className="crimson" style={{fontSize:16,color:"#c8a870"}}>{item.name} ×{item.qty}</span>
                           </button>
                         ))}
                       </div>
@@ -2723,7 +2771,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
   const vpOffsetY = -(camY - snapCamY) * TILE;
 
   return (
-    <div style={{height:"100vh",background:"#0a0806",display:"flex",flexDirection:"column",overflow:"hidden",userSelect:"none",alignItems:"center"}}>
+    <div style={{height:"100vh",background:"#0a0806",display:"flex",flexDirection:"column",overflow:"hidden",userSelect:"none"}}>
       <style>{G}</style>
 
       {/* Notification */}
@@ -2738,59 +2786,59 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
       {/* Top HUD */}
       <div style={{background:"linear-gradient(180deg,rgba(0,0,0,0.95),rgba(0,0,0,0.88))",
-        borderBottom:"2px solid rgba(200,165,80,0.18)",padding:"12px 18px",
+        borderBottom:"2px solid rgba(200,165,80,0.18)",padding:"10px 18px",
         display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",zIndex:100,flexShrink:0,
         boxShadow:"0 2px 8px rgba(0,0,0,0.6)"}}>
-        <div className="cinzel" style={{fontSize:10,color:"#f5c518",letterSpacing:3,fontWeight:700}}>◆ OQUEST ◆</div>
+        <div className="cinzel" style={{fontSize:14,color:"#f5c518",letterSpacing:3,fontWeight:700}}>◆ OQUEST ◆</div>
         <div style={{width:2,height:16,background:"linear-gradient(180deg,rgba(200,165,80,0.4),rgba(200,165,80,0.1))",borderRadius:1}}/>
         {[["HP",statsUI.hp,statsUI.maxHp,"#ff8888",statsUI.hp>statsUI.maxHp*0.5?"#40c040":statsUI.hp>statsUI.maxHp*0.25?"#c0a020":"#c02020"],
           ["MP",statsUI.mp,statsUI.maxMp,"#88aaff","#3060d0"]].map(([lbl,v,mx,lc,bg])=>(
           <div key={lbl} style={{display:"flex",alignItems:"center",gap:6}}>
-            <span className="cinzel" style={{fontSize:9,color:lc,fontWeight:600}}>{lbl}</span>
-            <div className="hud-bar" style={{width:80,height:8,background:"rgba(255,255,255,0.4)",borderRadius:4,border:"1px solid rgba(200,165,80,0.2)",overflow:"hidden"}}>
+            <span className="cinzel" style={{fontSize:12,color:lc,fontWeight:600}}>{lbl}</span>
+            <div className="hud-bar" style={{width:160,height:14,background:"rgba(255,255,255,0.4)",borderRadius:4,border:"1px solid rgba(200,165,80,0.2)",overflow:"hidden"}}>
               <div style={{height:"100%",width:`${(v/mx)*100}%`,background:bg,transition:"width 0.3s ease",boxShadow:`0 0 6px ${bg}88,inset 0 1px 2px rgba(255,255,255,0.1)`,borderRadius:4}}/>
             </div>
-            <span className="cinzel" style={{fontSize:8,color:"#8a7050",minWidth:32}}>{v}/{mx}</span>
+            <span className="cinzel" style={{fontSize:12,color:"#8a7050",minWidth:40}}>{v}/{mx}</span>
           </div>
         ))}
         <div style={{width:2,height:16,background:"linear-gradient(180deg,rgba(200,165,80,0.3),rgba(200,165,80,0.05))",borderRadius:1}}/>
-        <div className="cinzel" style={{fontSize:9,color:clsColor,fontWeight:600}}>{cls.icon} Lv.{statsUI.level}</div>
+        <div className="cinzel" style={{fontSize:13,color:clsColor,fontWeight:600}}>{cls.icon} Lv.{statsUI.level}</div>
         <div style={{display:"flex",alignItems:"center",gap:4}}>
-          <div className="hud-bar" style={{width:50,height:6,background:"rgba(255,255,255,0.4)",borderRadius:3,border:"1px solid rgba(245,197,24,0.2)",overflow:"hidden"}}>
+          <div className="hud-bar" style={{width:100,height:8,background:"rgba(255,255,255,0.4)",borderRadius:3,border:"1px solid rgba(245,197,24,0.2)",overflow:"hidden"}}>
             <div style={{height:"100%",width:`${Math.min(100,((statsUI.xp-xpToNext(statsUI.level-1))/(xpToNext(statsUI.level)-xpToNext(statsUI.level-1)))*100)}%`,
               background:"linear-gradient(90deg,#d4a030,#f5c518)",boxShadow:"0 0 5px #f5c51866,inset 0 1px 2px rgba(255,255,255,0.1)",borderRadius:3}}/>
           </div>
         </div>
         <div style={{flex:1}}/>
-        <div className="cinzel" style={{fontSize:9,color:"#f5c518",fontWeight:600}}>⭐ {statsUI.score.toLocaleString()}</div>
-        <div className="cinzel" style={{fontSize:9,color:"#f5c518",fontWeight:600}}>🪙 {statsUI.gold}</div>
-        <div className="cinzel" style={{fontSize:9,color:"#c84bfa",fontWeight:600}}>📜 {completedQuests.length}/{QUEST_DEFS.length}</div>
+        <div className="cinzel" style={{fontSize:13,color:"#f5c518",fontWeight:600}}>⭐ {statsUI.score.toLocaleString()}</div>
+        <div className="cinzel" style={{fontSize:13,color:"#f5c518",fontWeight:600}}>🪙 {statsUI.gold}</div>
+        <div className="cinzel" style={{fontSize:13,color:"#c84bfa",fontWeight:600}}>📜 {completedQuests.length}/{QUEST_DEFS.length}</div>
         <div style={{width:2,height:16,background:"linear-gradient(180deg,rgba(200,165,80,0.2),rgba(200,165,80,0.05))",borderRadius:1}}/>
         <div style={{display:"flex",gap:5}}>
-          <button className="btn" style={{color:"#8a6830",borderColor:"#2a1804",padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          <button className="btn" style={{color:"#8a6830",borderColor:"#2a1804",padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(0,0,0,0.4)"}} onClick={()=>setShowInv(v=>!v)}>🎒 Inventory</button>
-          <button className="btn btn-purple" style={{padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          <button className="btn btn-purple" style={{padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(200,75,250,0.3)"}} onClick={()=>setShowQuests(v=>!v)}>📜 Quests</button>
-          <button className="btn btn-blue" style={{padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          <button className="btn btn-blue" style={{padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(0,100,200,0.3)"}} onClick={()=>{setQuiz(QUIZZES[Math.floor(Math.random()*QUIZZES.length)]);setQuizPick(null);setQuizCtx("explore");setScreen("quiz");}}>📚 Quiz</button>
-          {showChathead===false&&questsCompletedCount>=3&&<button className="btn" style={{color:"#c84bfa",borderColor:"rgba(200,75,250,0.4)",padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          {showChathead===false&&questsCompletedCount>=3&&<button className="btn" style={{color:"#c84bfa",borderColor:"rgba(200,75,250,0.4)",padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(200,75,250,0.2)"}} onClick={()=>{setShowChathead(true);setChatheadMinimized(false);}}>🔮 Chat</button>}
-          <button className="btn" style={{color:"#4bfa7f",borderColor:"rgba(75,250,127,0.4)",padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          <button className="btn" style={{color:"#4bfa7f",borderColor:"rgba(75,250,127,0.4)",padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(75,250,127,0.2)"}} onClick={saveGameProgress}>💾 Save</button>
-          <button className="btn btn-gold" style={{padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          <button className="btn btn-gold" style={{padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(245,197,24,0.3)"}} onClick={async()=>{await saveLB();setScreen("leaderboard");}}>⭐ Fame</button>
-          <button className="btn btn-red" style={{padding:"10px 16px",fontSize:10,fontWeight:600,transition:"all 0.2s",
+          <button className="btn btn-red" style={{padding:"11px 18px",fontSize:13,fontWeight:600,transition:"all 0.2s",
             boxShadow:"0 2px 4px rgba(255,50,50,0.3)"}} onClick={async()=>{await saveLB();setScreen("gameover");}}>✕ Exit</button>
         </div>
       </div>
 
       {/* World viewport */}
-      <div style={{flex:1,position:"relative",overflow:"hidden",width:"100%",maxWidth:1216}}>
+      <div style={{flex:1,position:"relative",overflow:"hidden",width:"100%",height:"100%",minHeight:0}}>
         {/* Inner layer: sub-pixel camera offset applied here for smooth panning */}
-        <div style={{position:"absolute",inset:0,transform:`translate(${vpOffsetX}px,${vpOffsetY}px)`,willChange:"transform"}}>
+        <div style={{position:"absolute",left:0,top:0,width:MAP_W*TILE,height:MAP_H*TILE,transform:`translate(${vpOffsetX}px,${vpOffsetY}px)`,willChange:"transform"}}>
         {/* Ground layer */}
-        <div style={{position:"absolute",left:0,top:0,width:VIEW_W*TILE,height:VIEW_H*TILE}}>
-          {Array.from({length:VIEW_H},(_,row)=>Array.from({length:VIEW_W},(_,col)=>{
+        <div style={{position:"absolute",left:0,top:0,width:"100%",height:"100%"}}>
+          {Array.from({length:viewH},(_,row)=>Array.from({length:viewW},(_,col)=>{
             const mx=Math.floor(col+snapCamX),my=Math.floor(row+snapCamY);
             if(mx>=MAP_W||my>=MAP_H) return null;
             const t=worldMap[my][mx];
@@ -2799,8 +2847,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           }))}
         </div>
         {/* Object layer */}
-        <div style={{position:"absolute",left:0,top:0,width:VIEW_W*TILE,height:VIEW_H*TILE}}>
-          {Array.from({length:VIEW_H},(_,row)=>Array.from({length:VIEW_W},(_,col)=>{
+        <div style={{position:"absolute",left:0,top:0,width:"100%",height:"100%"}}>
+          {Array.from({length:viewH},(_,row)=>Array.from({length:viewW},(_,col)=>{
             const mx=Math.floor(col+snapCamX),my=Math.floor(row+snapCamY);
             if(mx>=MAP_W||my>=MAP_H) return null;
             const t=worldMap[my][mx];
@@ -2822,26 +2870,26 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               onClick={()=>!dialogueLock.current&&openNPC(npc)}>
               <CharSprite role={npc.role} size={TILE} tick={animFrame}/>
               {/* Name tag */}
-              <div style={{position:"absolute",top:-20,left:"50%",transform:"translateX(-50%)",
-                background:"rgba(0,0,0,0.88)",border:"1px solid rgba(200,165,80,0.2)",padding:"2px 8px",borderRadius:10,whiteSpace:"nowrap",pointerEvents:"none"}}>
-                <div className="cinzel" style={{fontSize:7,color:"#f5c518"}}>{npc.name}</div>
+              <div style={{position:"absolute",top:-38,left:"50%",transform:"translateX(-50%)",
+                background:"rgba(0,0,0,0.92)",border:"1px solid rgba(200,165,80,0.4)",padding:"4px 12px",borderRadius:10,whiteSpace:"nowrap",pointerEvents:"none"}}>
+                <div className="cinzel" style={{fontSize:12,color:"#f5c518",fontWeight:700,letterSpacing:1}}>{npc.name}</div>
               </div>
               {/* Quest indicator */}
               {hasActiveQ&&(
                 <div style={{position:"absolute",top:-36,left:"50%",transform:"translateX(-50%)",
-                  fontSize:16,animation:"float 1.5s ease-in-out infinite",pointerEvents:"none",
+                  fontSize:19,animation:"float 1.5s ease-in-out infinite",pointerEvents:"none",
                   filter:"drop-shadow(0 0 6px #f5c518)"}}>❗</div>
               )}
               {hasDoneQ&&(
                 <div style={{position:"absolute",top:-36,left:"50%",transform:"translateX(-50%)",
-                  fontSize:14,pointerEvents:"none"}}>✅</div>
+                  fontSize:18,pointerEvents:"none"}}>✅</div>
               )}
               {/* Interact hint */}
               {near&&(
                 <div style={{position:"absolute",top:-50,left:"50%",transform:"translateX(-50%)",
                   background:"rgba(245,197,24,0.1)",border:"1px solid rgba(245,197,24,0.5)",padding:"2px 7px",borderRadius:3,
                   whiteSpace:"nowrap",animation:"pulse 0.8s infinite",pointerEvents:"none"}}>
-                  <div className="cinzel" style={{fontSize:7,color:"#f5c518"}}>[E] Talk</div>
+                  <div className="cinzel" style={{fontSize:10,color:"#f5c518"}}>[E] Talk</div>
                 </div>
               )}
             </div>
@@ -2861,8 +2909,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               <div style={{position:"absolute",top:-8,left:4,right:4,height:4,background:"rgba(0,0,0,0.75)",borderRadius:2,overflow:"hidden"}}>
                 <div style={{height:"100%",width:`${(e.hp/e.maxHp)*100}%`,background:e.color,transition:"width 0.3s",boxShadow:`0 0 4px ${e.color}88`}}/>
               </div>
-              <div style={{position:"absolute",top:-20,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",pointerEvents:"none"}}>
-                <div className="cinzel" style={{fontSize:6,color:e.color,background:"rgba(0,0,0,0.8)",padding:"1px 4px",borderRadius:2}}>{e.name}</div>
+              <div style={{position:"absolute",top:-38,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",pointerEvents:"none"}}>
+                <div className="cinzel" style={{fontSize:16,color:e.color,fontWeight:700,background:"rgba(0,0,0,0.9)",padding:"3px 8px",borderRadius:4,border:`1px solid ${e.color}66`}}>{e.name}</div>
               </div>
             </div>
           );
@@ -2877,11 +2925,11 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               animation:"pulseFast 0.7s infinite"}} onClick={triggerBossFight}>
               <div style={{position:"absolute",inset:4,background:"rgba(255,0,50,0.12)",border:"2px solid #ff2244",borderRadius:6,
                 display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 16px rgba(255,0,50,0.4)"}}>
-                <span style={{fontSize:26,filter:"drop-shadow(0 0 8px #ff2244)"}}>💀</span>
+                <span style={{fontSize:32,filter:"drop-shadow(0 0 8px #ff2244)"}}>💀</span>
               </div>
               <div style={{position:"absolute",top:-24,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",
                 background:"rgba(0,0,0,0.9)",padding:"2px 7px",borderRadius:3,border:"1px solid rgba(255,0,50,0.4)"}}>
-                <div className="cinzel" style={{fontSize:7,color:"#ff2244",animation:"glow 1.5s infinite"}}>BOSS — CLICK TO FIGHT</div>
+                <div className="cinzel" style={{fontSize:10,color:"#ff2244",animation:"glow 1.5s infinite"}}>BOSS — CLICK TO FIGHT</div>
               </div>
             </div>
           );
@@ -2891,9 +2939,9 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         <div style={{position:"absolute",left:(playerPos.x-snapCamX)*TILE,top:(playerPos.y-snapCamY)*TILE,width:TILE,height:TILE,
           zIndex:(playerPos.y-snapCamY)+3,transition:"none"}}>
           <CharSprite role="player" moving={playerMoving} color={clsColor} size={TILE} tick={animFrame} facing={playerDir===2?2:0}/>
-          <div style={{position:"absolute",top:-18,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",pointerEvents:"none"}}>
-            <div className="cinzel" style={{fontSize:7,color:clsColor,background:"rgba(0,0,0,0.85)",padding:"1px 6px",borderRadius:10,
-              boxShadow:`0 0 8px ${clsColor}44`}}>{playerName.slice(0,12)}</div>
+          <div style={{position:"absolute",top:-36,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",pointerEvents:"none"}}>
+            <div className="cinzel" style={{fontSize:18,color:clsColor,fontWeight:700,background:"rgba(0,0,0,0.92)",padding:"4px 10px",borderRadius:10,
+              boxShadow:`0 0 10px ${clsColor}66`,border:`1px solid ${clsColor}44`}}>{playerName.slice(0,12)}</div>
           </div>
         </div>
 
@@ -2908,18 +2956,18 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               <div style={{position:"absolute",inset:8,background:"radial-gradient(circle,rgba(216,80,255,0.4),rgba(100,50,150,0.2))",
                 border:"2px solid #d850ff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
                 boxShadow:"0 0 20px rgba(216,80,255,0.6), inset 0 0 12px rgba(216,80,255,0.3)"}}>
-                <span style={{fontSize:20,animation:"float 1.5s ease-in-out infinite",filter:"drop-shadow(0 0 6px #d850ff)"}}>⏰</span>
+                <span style={{fontSize:26,animation:"float 1.5s ease-in-out infinite",filter:"drop-shadow(0 0 6px #d850ff)"}}>⏰</span>
               </div>
               {near&&(
                 <div style={{position:"absolute",top:-40,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",
                   background:"rgba(216,80,255,0.15)",border:"1px solid rgba(216,80,255,0.5)",padding:"2px 8px",borderRadius:4,
                   animation:"pulse 0.8s infinite",pointerEvents:"none"}}>
-                  <div className="cinzel" style={{fontSize:7,color:"#d850ff"}}>[E] Enter Portal</div>
+                  <div className="cinzel" style={{fontSize:10,color:"#d850ff"}}>[E] Enter Portal</div>
                 </div>
               )}
               <div style={{position:"absolute",top:-24,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",pointerEvents:"none"}}>
-                <div className="cinzel" style={{fontSize:8,color:"#d850ff",background:"rgba(0,0,0,0.8)",padding:"2px 6px",borderRadius:10,
-                  textShadow:"0 0 6px #d850ff"}}>Task Scheduling</div>
+                <div className="cinzel" style={{fontSize:18,color:"#d850ff",fontWeight:700,background:"rgba(0,0,0,0.9)",padding:"4px 10px",borderRadius:10,
+                  textShadow:"0 0 8px #d850ff",border:"1px solid #d850ff44"}}>Task Scheduling</div>
               </div>
             </div>
           );
@@ -2936,18 +2984,18 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               <div style={{position:"absolute",inset:8,background:"radial-gradient(circle,rgba(92,191,255,0.4),rgba(50,100,150,0.2))",
                 border:"2px solid #5cbfff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
                 boxShadow:"0 0 20px rgba(92,191,255,0.6), inset 0 0 12px rgba(92,191,255,0.3)"}}>
-                <span style={{fontSize:20,animation:"float 1.5s ease-in-out infinite",filter:"drop-shadow(0 0 6px #5cbfff)"}}>💾</span>
+                <span style={{fontSize:26,animation:"float 1.5s ease-in-out infinite",filter:"drop-shadow(0 0 6px #5cbfff)"}}>💾</span>
               </div>
               {near&&(
                 <div style={{position:"absolute",top:-40,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",
                   background:"rgba(92,191,255,0.15)",border:"1px solid rgba(92,191,255,0.5)",padding:"2px 8px",borderRadius:4,
                   animation:"pulse 0.8s infinite",pointerEvents:"none"}}>
-                  <div className="cinzel" style={{fontSize:7,color:"#5cbfff"}}>[E] Enter Portal</div>
+                  <div className="cinzel" style={{fontSize:10,color:"#5cbfff"}}>[E] Enter Portal</div>
                 </div>
               )}
               <div style={{position:"absolute",top:-24,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",pointerEvents:"none"}}>
-                <div className="cinzel" style={{fontSize:8,color:"#5cbfff",background:"rgba(0,0,0,0.8)",padding:"2px 6px",borderRadius:10,
-                  textShadow:"0 0 6px #5cbfff"}}>Memory Management</div>
+                <div className="cinzel" style={{fontSize:18,color:"#5cbfff",fontWeight:700,background:"rgba(0,0,0,0.9)",padding:"4px 10px",borderRadius:10,
+                  textShadow:"0 0 8px #5cbfff",border:"1px solid #5cbfff44"}}>Memory Management</div>
               </div>
             </div>
           );
@@ -2957,15 +3005,15 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         {floats.map(f=>(
           <div key={f.id} style={{position:"absolute",top:"30%",left:"50%",transform:"translateX(-50%)",pointerEvents:"none",zIndex:999,
             animation:"floatUp 1.2s ease forwards"}}>
-            <div className="cinzel" style={{fontSize:17,color:f.color,fontWeight:700,textShadow:`0 0 10px ${f.color}`,whiteSpace:"nowrap"}}>{f.text}</div>
+            <div className="cinzel" style={{fontSize:22,color:f.color,fontWeight:700,textShadow:`0 0 10px ${f.color}`,whiteSpace:"nowrap"}}>{f.text}</div>
           </div>
         ))}
         </div>{/* end inner sub-pixel layer */}
 
         {/* Minimap */}
-        <div style={{position:"absolute",bottom:8,right:8,width:118,height:88,background:"rgba(0,0,0,0.88)",
+        <div style={{position:"absolute",bottom:8,right:8,zIndex:50,width:118,height:88,background:"rgba(0,0,0,0.88)",
           border:"1px solid rgba(200,165,80,0.18)",borderRadius:6,overflow:"hidden",boxShadow:"0 4px 16px rgba(0,0,0,0.5)"}}>
-          <div className="cinzel" style={{fontSize:6,color:"#5a4020",padding:"2px 5px",letterSpacing:1}}>MAP</div>
+          <div className="cinzel" style={{fontSize:8,color:"#5a4020",padding:"2px 5px",letterSpacing:1}}>MAP</div>
           <div style={{position:"relative",width:118,height:76}}>
             {worldMap.map((row,ry)=>row.map((t,rx)=>{
               const mw=118/MAP_W,mh=76/MAP_H;
@@ -2992,7 +3040,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             <div style={{position:"absolute",left:playerPos.x*(118/MAP_W)-2.5,top:playerPos.y*(76/MAP_H)-2.5,width:6,height:6,
               background:clsColor,borderRadius:"50%",boxShadow:`0 0 5px ${clsColor}`,zIndex:10}}/>
             {/* View rect */}
-            <div style={{position:"absolute",left:camX*(118/MAP_W),top:camY*(76/MAP_H),width:VIEW_W*(118/MAP_W),height:VIEW_H*(76/MAP_H),
+            <div style={{position:"absolute",left:camX*(118/MAP_W),top:camY*(76/MAP_H),width:viewW*(118/MAP_W),height:viewH*(76/MAP_H),
               border:`1px solid ${clsColor}55`,pointerEvents:"none"}}/>
           </div>
         </div>
@@ -3000,7 +3048,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
         {/* Controls hint */}
         <div style={{position:"absolute",bottom:8,left:8,background:"rgba(0,0,0,0.75)",border:"1px solid rgba(200,165,80,0.1)",
           padding:"5px 10px",borderRadius:5}}>
-          <div className="cinzel" style={{fontSize:6,color:"#4a3020",lineHeight:1.9}}>
+          <div className="cinzel" style={{fontSize:8,color:"#4a3020",lineHeight:1.9}}>
             WASD/↑↓←→ Move · E Interact<br/>
             I Inventory · Q Quests · Walk into enemies
           </div>
@@ -3009,14 +3057,14 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
       {/* Mobile controls */}
       <div style={{background:"linear-gradient(180deg,rgba(0,0,0,0.88),rgba(0,0,0,0.95))",borderTop:"2px solid rgba(200,165,80,0.16)",
-        padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexShrink:0,
+        padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"center",gap:10,flexShrink:0,
         boxShadow:"0 -2px 8px rgba(0,0,0,0.5)"}}>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,44px)",gridTemplateRows:"repeat(3,44px)",gap:3}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,60px)",gridTemplateRows:"repeat(3,60px)",gap:3}}>
           {[["","ArrowUp",""],["ArrowLeft","","ArrowRight"],["","ArrowDown",""]].map((row,ri)=>row.map((key,ci)=>(
             <button key={`${ri}-${ci}`}
               style={{background:key?"linear-gradient(135deg,rgba(200,165,80,0.12),rgba(200,165,80,0.06))":"transparent",
                 border:key?"1.5px solid rgba(200,165,80,0.3)":"none",
-                color:"#f5c518",fontSize:16,cursor:key?"pointer":"default",borderRadius:6,display:"flex",alignItems:"center",
+                color:"#f5c518",fontSize:24,cursor:key?"pointer":"default",borderRadius:6,display:"flex",alignItems:"center",
                 justifyContent:"center",touchAction:"none",userSelect:"none",transition:"all 0.15s",fontWeight:700,
                 boxShadow:key?"0 2px 6px rgba(0,0,0,0.3)":"none"}}
               onPointerDown={e=>{e.preventDefault();if(key){keys.current={};keys.current[key]=true;}}}
@@ -3025,16 +3073,16 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             >{key==="ArrowUp"?"▲":key==="ArrowDown"?"▼":key==="ArrowLeft"?"◀":key==="ArrowRight"?"▶":""}</button>
           )))}
         </div>
-        <div style={{display:"flex",gap:7,flexWrap:"wrap",justifyContent:"flex-end"}}>
-          <button className="btn btn-gold" style={{padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={handleInteract}>⚡ Interact</button>
-          <button className="btn" style={{color:"#8a6830",borderColor:"rgba(120,90,30,0.4)",padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={()=>setShowInv(v=>!v)}>🎒 Inventory</button>
-          <button className="btn btn-purple" style={{padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={()=>setShowQuests(v=>!v)}>📜 Quests</button>
-          <button className="btn btn-blue" style={{padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={()=>{setQuiz(QUIZZES[Math.floor(Math.random()*QUIZZES.length)]);setQuizPick(null);setQuizCtx("explore");setScreen("quiz");}}>📚 Quiz</button>
-          <button className="btn" style={{color:"#4bfa7f",borderColor:"rgba(75,250,127,0.4)",padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={saveGameProgress}>💾 Save</button>
-          {hasSave&&<button className="btn" style={{color:"#f5c518",borderColor:"rgba(245,197,24,0.4)",padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={loadGameProgress}>🔄 Load</button>}
-          <button className="btn" style={{color:audioEnabled?"#87ceeb":"#555",borderColor:audioEnabled?"rgba(135,206,235,0.4)":"rgba(100,100,100,0.25)",padding:"10px 18px",fontSize:11,fontWeight:700}} onClick={()=>setAudioEnabled(!audioEnabled)}>{audioEnabled?"🔊":"🔇"} {audioEnabled?"On":"Off"}</button>
+        <div style={{display:"flex",gap:7,flexWrap:"wrap",justifyContent:"center"}}>
+          <button className="btn btn-gold" style={{padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={handleInteract}>⚡ Interact</button>
+          <button className="btn" style={{color:"#8a6830",borderColor:"rgba(120,90,30,0.4)",padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={()=>setShowInv(v=>!v)}>🎒 Inventory</button>
+          <button className="btn btn-purple" style={{padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={()=>setShowQuests(v=>!v)}>📜 Quests</button>
+          <button className="btn btn-blue" style={{padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={()=>{setQuiz(QUIZZES[Math.floor(Math.random()*QUIZZES.length)]);setQuizPick(null);setQuizCtx("explore");setScreen("quiz");}}>📚 Quiz</button>
+          <button className="btn" style={{color:"#4bfa7f",borderColor:"rgba(75,250,127,0.4)",padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={saveGameProgress}>💾 Save</button>
+          {hasSave&&<button className="btn" style={{color:"#f5c518",borderColor:"rgba(245,197,24,0.4)",padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={loadGameProgress}>🔄 Load</button>}
+          <button className="btn" style={{color:audioEnabled?"#87ceeb":"#555",borderColor:audioEnabled?"rgba(135,206,235,0.4)":"rgba(100,100,100,0.25)",padding:"12px 22px",fontSize:14,fontWeight:700}} onClick={()=>setAudioEnabled(!audioEnabled)}>{audioEnabled?"🔊":"🔇"} {audioEnabled?"On":"Off"}</button>
           {bossSummoned&&!completedQuests.includes("q_kernel")&&(
-            <button className="btn btn-red" style={{padding:"10px 18px",fontSize:11,fontWeight:700,animation:"pulseFast 0.8s infinite"}} onClick={triggerBossFight}>💀 Boss</button>
+            <button className="btn btn-red" style={{padding:"12px 22px",fontSize:14,fontWeight:700,animation:"pulseFast 0.8s infinite"}} onClick={triggerBossFight}>💀 Boss</button>
           )}
         </div>
       </div>
@@ -3045,20 +3093,20 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           onClick={()=>setShowInv(false)}>
           <div className="panel" style={{padding:24,borderRadius:10,minWidth:300,maxWidth:440,animation:"fadeUp 0.22s ease",
             boxShadow:"0 8px 40px rgba(0,0,0,0.7)"}} onClick={e=>e.stopPropagation()}>
-            <div className="cinzel" style={{fontSize:12,color:"#f5c518",marginBottom:14,letterSpacing:2}}>🎒 Inventory</div>
+            <div className="cinzel" style={{fontSize:16,color:"#f5c518",marginBottom:14,letterSpacing:2}}>🎒 Inventory</div>
             {inventory.length===0?(
-              <div className="crimson" style={{fontSize:16,color:"#4a3020",fontStyle:"italic",padding:"20px 0"}}>Your bag is empty.</div>
+              <div className="crimson" style={{fontSize:19,color:"#4a3020",fontStyle:"italic",padding:"20px 0"}}>Your bag is empty.</div>
             ):inventory.map(item=>(
               <div key={item.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:"1px solid rgba(200,165,80,0.08)"}}>
                 <span style={{fontSize:24}}>{item.icon}</span>
                 <div style={{flex:1}}>
-                  <div className="cinzel" style={{fontSize:10,color:"#e8d5a0"}}>{item.name} <span style={{color:"#7a6040"}}>×{item.qty}</span></div>
-                  <div className="crimson" style={{fontSize:13,color:"#7a6040",fontStyle:"italic"}}>{item.desc}</div>
+                  <div className="cinzel" style={{fontSize:13,color:"#e8d5a0"}}>{item.name} <span style={{color:"#7a6040"}}>×{item.qty}</span></div>
+                  <div className="crimson" style={{fontSize:16,color:"#7a6040",fontStyle:"italic"}}>{item.desc}</div>
                 </div>
               </div>
             ))}
             <div style={{marginTop:14,display:"flex",justifyContent:"flex-end"}}>
-              <button className="btn" style={{color:"#7a6040",borderColor:"#3a2010",padding:"5px 14px",fontSize:9}} onClick={()=>setShowInv(false)}>Close</button>
+              <button className="btn" style={{color:"#7a6040",borderColor:"#3a2010",padding:"5px 14px",fontSize:13}} onClick={()=>setShowInv(false)}>Close</button>
             </div>
           </div>
         </div>
@@ -3070,7 +3118,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           onClick={()=>setShowQuests(false)}>
           <div className="panel" style={{padding:22,borderRadius:10,minWidth:340,maxWidth:540,maxHeight:"85vh",overflowY:"auto",
             animation:"fadeUp 0.22s ease",boxShadow:"0 8px 40px rgba(0,0,0,0.7)"}} onClick={e=>e.stopPropagation()}>
-            <div className="cinzel" style={{fontSize:12,color:"#c84bfa",marginBottom:14,letterSpacing:2}}>📜 Quest Log</div>
+            <div className="cinzel" style={{fontSize:16,color:"#c84bfa",marginBottom:14,letterSpacing:2}}>📜 Quest Log</div>
             {QUEST_DEFS.map(qd=>{
               const active=quests.find(q=>q.id===qd.id);
               const done=completedQuests.includes(qd.id);
@@ -3112,7 +3160,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
       {/* Chathead Oracle */}
       {showChathead&&(
-        <div style={{position:"fixed",bottom:24,right:24,width:chatheadMinimized?60:320,height:chatheadMinimized?60:420,
+        <div style={{position:"fixed",bottom:24,right:24,width:chatheadMinimized?70:520,height:chatheadMinimized?70:620,
           background:"rgba(10,8,6,0.97)",border:"2px solid #c84bfa",borderRadius:chatheadMinimized?30:12,
           boxShadow:"0 8px 32px rgba(200,75,250,0.3)",display:"flex",flexDirection:"column",zIndex:450,
           transition:"all 0.3s ease",overflow:"hidden"}}>
@@ -3122,7 +3170,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",
             borderBottom:chatheadMinimized?"none":"1px solid rgba(200,75,250,0.2)",cursor:"pointer"}}
             onClick={()=>setChatheadMinimized(!chatheadMinimized)}>
-            <div className="cinzel" style={{fontSize:12,color:"#c84bfa",letterSpacing:1}}>
+            <div className="cinzel" style={{fontSize:16,color:"#c84bfa",letterSpacing:1}}>
               {chatheadMinimized?"🔮":"Oracle AI 🔮"}
             </div>
             <button className="btn" style={{padding:"2px 6px",fontSize:8,marginLeft:"auto"}} onClick={()=>setShowChathead(false)}>✕</button>
@@ -3144,7 +3192,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                     <div style={{maxWidth:"70%",padding:"8px 12px",borderRadius:8,
                       background:msg.role==="user"?"rgba(200,75,250,0.15)":"rgba(75,250,127,0.1)",
                       border:"1px solid "+(msg.role==="user"?"#c84bfa66":"#4bfa7f66")}}>
-                      <div className="crimson" style={{fontSize:12,color:msg.role==="user"?"#e8d5a0":"#8aff8a",lineHeight:1.4}}>{msg.text}</div>
+                      <div className="crimson" style={{fontSize:17,color:msg.role==="user"?"#e8d5a0":"#8aff8a",lineHeight:1.6}}>{msg.text}</div>
                     </div>
                   </div>
                 ))}
@@ -3159,23 +3207,23 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                     value={chatInput}
                     onChange={(e)=>setChatInput(e.target.value)}
                     onKeyPress={(e)=>e.key==="Enter"&&handleChatSubmit()}
-                    style={{flex:1,padding:"6px 10px",fontSize:11,background:"rgba(10,8,6,0.8)",
+                    style={{flex:1,padding:"10px 14px",fontSize:16,background:"rgba(10,8,6,0.8)",
                       border:"1px solid rgba(200,75,250,0.3)",borderRadius:4,color:"#d4b870",fontFamily:"'Crimson Text',serif"}}
                   />
-                  <button onClick={handleChatSubmit} style={{padding:"6px 10px",background:"#c84bfa",color:"white",
-                    border:"none",borderRadius:4,fontSize:11,cursor:"pointer"}}>Send</button>
+                  <button onClick={handleChatSubmit} style={{padding:"10px 16px",background:"#c84bfa",color:"white",
+                    border:"none",borderRadius:4,fontSize:16,cursor:"pointer"}}>Send</button>
                 </div>
               ) : (
                 <div style={{borderTop:"1px solid rgba(200,75,250,0.2)",padding:"8px 10px",background:"rgba(200,75,250,0.05)",borderRadius:4,textAlign:"center"}}>
-                  <div className="cinzel" style={{fontSize:10,color:"#8a6830"}}>🔒 Solve Crossword to Chat</div>
+                  <div className="cinzel" style={{fontSize:14,color:"#8a6830"}}>🔒 Solve Crossword to Chat</div>
                 </div>
               )}
 
               {/* Side Quest Button */}
               {!crosswordCompleted&&(
                 <button onClick={()=>setShowCrossword(true)}
-                  style={{margin:"8px 10px 0",padding:"8px 12px",background:"linear-gradient(135deg,rgba(200,75,250,0.2),rgba(100,50,150,0.2))",
-                    border:"1px solid #c84bfa",color:"#c84bfa",borderRadius:6,fontSize:10,cursor:"pointer",fontWeight:"bold"}}>
+                  style={{margin:"8px 10px 0",padding:"12px 16px",background:"linear-gradient(135deg,rgba(200,75,250,0.2),rgba(100,50,150,0.2))",
+                    border:"1px solid #c84bfa",color:"#c84bfa",borderRadius:6,fontSize:15,cursor:"pointer",fontWeight:"bold"}}>
                   📖 Crossword Puzzle
                 </button>
               )}
@@ -3196,16 +3244,16 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           onClick={()=>setShowCrossword(false)}>
           <div className="panel" style={{padding:28,borderRadius:12,maxWidth:1100,animation:"fadeUp 0.3s ease",
             boxShadow:"0 8px 40px rgba(0,0,0,0.9)",maxHeight:"90vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
-            <div className="cinzel" style={{fontSize:16,color:"#c84bfa",marginBottom:4,letterSpacing:2}}>🎯 OS CROSSWORD PUZZLE</div>
-            <div className="crimson" style={{fontSize:12,color:"#7a6040",marginBottom:20}}>Fill in the grid with OS terms. Intersections are marked in gold!</div>
+            <div className="cinzel" style={{fontSize:20,color:"#c84bfa",marginBottom:4,letterSpacing:2}}>🎯 OS CROSSWORD PUZZLE</div>
+            <div className="crimson" style={{fontSize:18,color:"#7a6040",marginBottom:20}}>Fill in the grid with OS terms. Intersections are marked in gold!</div>
             
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:28}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:32}}>
               {/* Crossword Grid */}
-              <div style={{background:"rgba(10,8,6,0.5)",border:"2px solid #c84bfa66",borderRadius:8,padding:20}}>
-                <div style={{display:"inline-block",border:"2px solid #c84bfa",borderRadius:4,padding:8}}>
+              <div style={{background:"rgba(10,8,6,0.5)",border:"2px solid #c84bfa66",borderRadius:8,padding:24}}>
+                <div style={{display:"inline-block",border:"2px solid #c84bfa",borderRadius:4,padding:12}}>
                   {/* 8x8 grid */}
                   {Array.from({length:8}).map((_, row) => (
-                    <div key={`row-${row}`} style={{display:"flex",gap:1}}>
+                    <div key={`row-${row}`} style={{display:"flex",gap:2}}>
                       {Array.from({length:8}).map((_, col) => {
                         // Define which cells are active (not black)
                         const blackCells = [];
@@ -3238,13 +3286,13 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         const isIntersection = intersections.includes(cellKey);
                         
                         if(!isActive) {
-                          return <div key={`cell-${row}-${col}`} style={{width:32,height:32,background:"#000",borderRadius:2}}/>;
+                          return <div key={`cell-${row}-${col}`} style={{width:48,height:48,background:"#000",borderRadius:2}}/>;
                         }
                         
                         return (
-                          <div key={`cell-${row}-${col}`} style={{position:"relative",width:32,height:32}}>
+                          <div key={`cell-${row}-${col}`} style={{position:"relative",width:48,height:48}}>
                             {clueNum && (
-                              <div style={{position:"absolute",top:1,left:1,fontSize:9,color:"#d850ff",fontWeight:"bold",lineHeight:1}}>
+                              <div style={{position:"absolute",top:1,left:1,fontSize:16,color:"#d850ff",fontWeight:"bold",lineHeight:1}}>
                                 {clueNum}
                               </div>
                             )}
@@ -3253,7 +3301,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                               value={crosswordAnswers[cellKey] || ""}
                               onChange={(e) => setCrosswordAnswers({...crosswordAnswers, [cellKey]: e.target.value.toUpperCase()})}
                               style={{
-                                width:"100%",height:"100%",textAlign:"center",fontSize:11,fontWeight:"bold",
+                                width:"100%",height:"100%",textAlign:"center",fontSize:24,fontWeight:"bold",
                                 background: isIntersection ? "rgba(245,197,24,0.25)" : "rgba(200,75,250,0.1)",
                                 border: isIntersection ? "1.5px solid #f5c518" : "1px solid #c84bfa66",
                                 borderRadius:2,color:"#d850ff",
@@ -3266,7 +3314,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                     </div>
                   ))}
                 </div>
-                <div style={{marginTop:16,fontSize:10,color:"#7a6040",lineHeight:1.6}}>
+                <div style={{marginTop:16,fontSize:17,color:"#7a6040",lineHeight:1.8}}>
                   <strong>Legend:</strong><br/>
                   🟨 Gold cells = letter intersections<br/>
                   Black squares = empty spaces
@@ -3274,37 +3322,37 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               </div>
 
               {/* Clues Panel */}
-              <div style={{fontSize:11}}>
+              <div style={{fontSize:18}}>
                 <div style={{marginBottom:20}}>
-                  <div className="cinzel" style={{fontSize:12,color:"#c84bfa",marginBottom:10,fontWeight:"bold"}}>⬌ ACROSS</div>
-                  <div style={{background:"rgba(200,75,250,0.08)",border:"1px solid rgba(200,75,250,0.2)",borderRadius:6,padding:12}}>
-                    <div style={{color:"#d4b870",lineHeight:1.6}}>
-                      <strong style={{color:"#d850ff"}}>1. PROCESS</strong> (7 letters)<br/>
-                      <span style={{fontSize:10,color:"#7a6040"}}>Running program instance or task executing in the system.</span>
+                  <div className="cinzel" style={{fontSize:19,color:"#c84bfa",marginBottom:10,fontWeight:"bold"}}>⬌ ACROSS</div>
+                  <div style={{background:"rgba(200,75,250,0.08)",border:"1px solid rgba(200,75,250,0.2)",borderRadius:6,padding:14}}>
+                    <div style={{color:"#d4b870",lineHeight:1.8}}>
+                      <strong style={{fontSize:17,color:"#d850ff"}}>1. PROCESS</strong> (7 letters)<br/>
+                      <span style={{fontSize:17,color:"#7a6040"}}>Running program instance or task executing in the system.</span>
                     </div>
                   </div>
                 </div>
 
                 <div>
-                  <div className="cinzel" style={{fontSize:12,color:"#5cbfff",marginBottom:10,fontWeight:"bold"}}>⬇ DOWN</div>
-                  <div style={{background:"rgba(92,191,255,0.08)",border:"1px solid rgba(92,191,255,0.2)",borderRadius:6,padding:12}}>
-                    <div style={{marginBottom:12,color:"#7eb3d4",lineHeight:1.6}}>
-                      <strong style={{color:"#5cbfff"}}>2. THREAD</strong> (5 letters)<br/>
-                      <span style={{fontSize:10,color:"#567080"}}>Lightweight execution unit within a process.</span>
+                  <div className="cinzel" style={{fontSize:19,color:"#5cbfff",marginBottom:10,fontWeight:"bold"}}>⬇ DOWN</div>
+                  <div style={{background:"rgba(92,191,255,0.08)",border:"1px solid rgba(92,191,255,0.2)",borderRadius:6,padding:14}}>
+                    <div style={{marginBottom:12,color:"#7eb3d4",lineHeight:1.8}}>
+                      <strong style={{fontSize:17,color:"#5cbfff"}}>2. THREAD</strong> (5 letters)<br/>
+                      <span style={{fontSize:17,color:"#567080"}}>Lightweight execution unit within a process.</span>
                     </div>
-                    <div style={{marginBottom:12,color:"#7eb3d4",lineHeight:1.6}}>
-                      <strong style={{color:"#5cbfff"}}>3. EXEC</strong> (3 letters)<br/>
-                      <span style={{fontSize:10,color:"#567080"}}>System call that loads and executes a new program.</span>
+                    <div style={{marginBottom:12,color:"#7eb3d4",lineHeight:1.8}}>
+                      <strong style={{fontSize:17,color:"#5cbfff"}}>3. EXEC</strong> (3 letters)<br/>
+                      <span style={{fontSize:17,color:"#567080"}}>System call that loads and executes a new program.</span>
                     </div>
-                    <div style={{color:"#7eb3d4",lineHeight:1.6}}>
-                      <strong style={{color:"#5cbfff"}}>4. SWAP</strong> (3 letters)<br/>
-                      <span style={{fontSize:10,color:"#567080"}}>Virtual memory overflow space on disk.</span>
+                    <div style={{color:"#7eb3d4",lineHeight:1.8}}>
+                      <strong style={{fontSize:17,color:"#5cbfff"}}>4. SWAP</strong> (3 letters)<br/>
+                      <span style={{fontSize:17,color:"#567080"}}>Virtual memory overflow space on disk.</span>
                     </div>
                   </div>
                 </div>
 
-                <div style={{marginTop:20,padding:12,background:"rgba(255,200,0,0.08)",border:"1px solid rgba(255,200,0,0.2)",borderRadius:6,fontSize:10}}>
-                  <div style={{color:"#d4b870",lineHeight:1.6}}>
+                <div style={{marginTop:20,padding:14,background:"rgba(255,200,0,0.08)",border:"1px solid rgba(255,200,0,0.2)",borderRadius:6,fontSize:17}}>
+                  <div style={{color:"#d4b870",lineHeight:1.8}}>
                     <strong>✓ All 4 words correct to unlock the Oracle!</strong><br/>
                     PROCESS (across) intersects with THREAD, EXEC, and SWAP (down).
                   </div>
@@ -3314,9 +3362,9 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
             {/* Action Buttons */}
             <div style={{display:"flex",gap:10,marginTop:24}}>
-              <button className="btn" style={{flex:1,color:"#7a6040",borderColor:"#3a2010",padding:"10px",fontSize:11}}
+              <button className="btn" style={{flex:1,color:"#7a6040",borderColor:"#3a2010",padding:"10px",fontSize:15}}
                 onClick={()=>{setShowCrossword(false);}}>✕ Cancel</button>
-              <button className="btn btn-purple" style={{flex:1,padding:"10px",fontSize:11}}
+              <button className="btn btn-purple" style={{flex:1,padding:"10px",fontSize:15}}
                 onClick={()=>{
                   // Validate using the new expected structure
                   const ans = crosswordAnswers;
@@ -3382,11 +3430,11 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
           
           {/* ═══ TITLE BAR (48px) ═══ */}
           <div style={{height:"48px",background:"rgba(0,0,0,0.7)",borderBottom:`2px solid ${currentLessonPortal==="task-scheduling"?"#d850ff":"#5cbfff"}`,padding:"0 20px",display:"flex",justifyContent:"space-between",alignItems:"center",flex:"0 0 48px"}}>
-            <div className="cinzel" style={{fontSize:17,color:currentLessonPortal==="task-scheduling"?"#d850ff":"#5cbfff",fontWeight:"bold",letterSpacing:2}}>
+            <div className="cinzel" style={{fontSize:20,color:currentLessonPortal==="task-scheduling"?"#d850ff":"#5cbfff",fontWeight:"bold",letterSpacing:2}}>
               {currentLessonPortal==="task-scheduling"?"⏰ TASK SCHEDULING":"💾 MEMORY MANAGEMENT"}
             </div>
             <div style={{display:"flex",gap:12}}>
-              <button className="btn btn-green" style={{padding:"8px 18px",fontSize:12}} onClick={()=>{
+              <button className="btn btn-green" style={{padding:"8px 18px",fontSize:14}} onClick={()=>{
                 if(currentLessonPortal==="task-scheduling") setTaskSchedulingCompleted(true);
                 else setMemoryManagementCompleted(true);
                 S.current.xp += 50;
@@ -3395,7 +3443,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 setCurrentLessonPortal(null);
                 notify("✨ Lesson Complete! +50 XP","#4bfa7f",3000);
               }}>✓ COMPLETE +50XP</button>
-              <button className="btn" style={{padding:"8px 14px",fontSize:12}} onClick={()=>{setShowSimulator(false);setCurrentLessonPortal(null);}}>✕</button>
+              <button className="btn" style={{padding:"8px 14px",fontSize:14}} onClick={()=>{setShowSimulator(false);setCurrentLessonPortal(null);}}>✕</button>
             </div>
           </div>
 
@@ -3407,41 +3455,41 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               <div style={{background:"linear-gradient(180deg,rgba(216,80,255,0.08),rgba(100,50,150,0.05))",borderRight:"2px solid #d850ff44",display:"flex",flexDirection:"column",overflow:"hidden"}}>
                 {/* NPC Header */}
                 <div style={{padding:"14px 16px",borderBottom:"1px solid #d850ff33",background:"rgba(216,80,255,0.12)",display:"flex",alignItems:"center",gap:12}}>
-                  <span style={{fontSize:32}}>🧙‍♂️</span>
+                  <span style={{fontSize:40}}>🧙‍♂️</span>
                   <div>
-                    <div className="cinzel" style={{fontSize:14,color:"#d850ff",fontWeight:"bold"}}>Sage Scheduler</div>
-                    <div style={{fontSize:11,color:"#a060c0"}}>CPU Scheduling Teacher</div>
+                    <div className="cinzel" style={{fontSize:18,color:"#d850ff",fontWeight:"bold"}}>Sage Scheduler</div>
+                    <div style={{fontSize:15,color:"#a060c0"}}>CPU Scheduling Teacher</div>
                   </div>
                 </div>
 
                 {/* Step Navigation */}
                 <div style={{padding:"10px 14px",borderBottom:"1px solid #d850ff22",display:"flex",alignItems:"center",gap:6}}>
-                  <button style={{background:"#d850ff22",border:"1px solid #d850ff",color:"#d850ff",cursor:"pointer",padding:"4px 10px",borderRadius:4,fontSize:13,fontWeight:"bold"}} onClick={()=>setCpuNpcStep(Math.max(0,cpuNpcStep-1))}>‹</button>
+                  <button style={{background:"#d850ff22",border:"1px solid #d850ff",color:"#d850ff",cursor:"pointer",padding:"6px 12px",borderRadius:4,fontSize:15,fontWeight:"bold"}} onClick={()=>setCpuNpcStep(Math.max(0,cpuNpcStep-1))}>‹</button>
                   <div style={{display:"flex",gap:3,flex:1,justifyContent:"center"}}>
                     {[0,1,2,3,4,5,6].map(s=>(
-                      <div key={s} onClick={()=>setCpuNpcStep(s)} style={{width:18,height:18,borderRadius:"50%",background:s<=cpuNpcStep?"#d850ff":"#333",border:`1px solid ${s<=cpuNpcStep?"#d850ff":"#555"}`,cursor:"pointer",fontSize:9,display:"flex",alignItems:"center",justifyContent:"center",color:s<=cpuNpcStep?"#000":"#777",fontWeight:"bold"}}>{s+1}</div>
+                      <div key={s} onClick={()=>setCpuNpcStep(s)} style={{width:22,height:22,borderRadius:"50%",background:s<=cpuNpcStep?"#d850ff":"#333",border:`1px solid ${s<=cpuNpcStep?"#d850ff":"#555"}`,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",color:s<=cpuNpcStep?"#000":"#777",fontWeight:"bold"}}>{s+1}</div>
                     ))}
                   </div>
-                  <button style={{background:"#d850ff22",border:"1px solid #d850ff",color:"#d850ff",cursor:"pointer",padding:"4px 10px",borderRadius:4,fontSize:13,fontWeight:"bold"}} onClick={()=>setCpuNpcStep(Math.min(6,cpuNpcStep+1))}>›</button>
+                  <button style={{background:"#d850ff22",border:"1px solid #d850ff",color:"#d850ff",cursor:"pointer",padding:"6px 12px",borderRadius:4,fontSize:15,fontWeight:"bold"}} onClick={()=>setCpuNpcStep(Math.min(6,cpuNpcStep+1))}>›</button>
                 </div>
 
                 {/* Teaching Content */}
                 <div style={{flex:1,overflowY:"auto",padding:"14px"}}>
                   {cpuNpcStep===0 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>👋 Welcome to CPU Scheduling!</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.8,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>👋 Welcome to CPU Scheduling!</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.8,marginBottom:12}}>
                         I'm Sage Scheduler, and I'll teach you how operating systems decide <em>which process runs next</em> on the CPU.
                       </div>
                       <div style={{background:"rgba(216,80,255,0.1)",border:"1px solid #d850ff44",borderRadius:8,padding:12,marginBottom:12}}>
-                        <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:6}}>🖥️ What is CPU Scheduling?</div>
-                        <div style={{fontSize:12,color:"#c8b0e0",lineHeight:1.75}}>
+                        <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:6}}>🖥️ What is CPU Scheduling?</div>
+                        <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75}}>
                           When multiple processes want to run, the OS must decide the order. A <strong style={{color:"#f5c518"}}>scheduler</strong> picks which process gets CPU time next using an algorithm.
                         </div>
                       </div>
                       <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:8,padding:12}}>
-                        <div style={{fontSize:12,color:"#888",fontWeight:"bold",marginBottom:6}}>📋 Key Terms:</div>
-                        <div style={{fontSize:12,color:"#bbb",lineHeight:2}}>
+                        <div style={{fontSize:15,color:"#888",fontWeight:"bold",marginBottom:6}}>📋 Key Terms:</div>
+                        <div style={{fontSize:15,color:"#bbb",lineHeight:2}}>
                           • <strong style={{color:"#ffaa88"}}>Arrival Time (A)</strong> — when process enters queue<br/>
                           • <strong style={{color:"#88ff88"}}>Burst Time (B)</strong> — how long it needs the CPU<br/>
                           • <strong style={{color:"#88aaff"}}>Completion (C)</strong> — when it finishes<br/>
@@ -3449,13 +3497,13 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                           • <strong style={{color:"#ff88ff"}}>Wait Time (W)</strong> — TAT − B (time spent waiting)
                         </div>
                       </div>
-                      <div style={{marginTop:12,fontSize:12,color:"#a060c0",fontStyle:"italic"}}>👆 Click "›" or step 2 to continue learning!</div>
+                      <div style={{marginTop:12,fontSize:15,color:"#a060c0",fontStyle:"italic"}}>👆 Click "›" or step 2 to continue learning!</div>
                     </div>
                   )}
                   {cpuNpcStep===1 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>🎯 Choose Your Algorithm</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>🎯 Choose Your Algorithm</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
                         Each algorithm has different strengths. Pick one from the panel on the right!
                       </div>
                       {[
@@ -3466,21 +3514,21 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         {name:"Priority",color:"#ff88ff",title:"Priority Scheduling",desc:"Lower priority number = runs first. Can cause starvation of low-priority jobs."},
                       ].map(a=>(
                         <div key={a.name} style={{background:"rgba(0,0,0,0.3)",border:`1px solid ${a.color}44`,borderRadius:6,padding:"8px 10px",marginBottom:7}}>
-                          <div style={{fontSize:12,color:a.color,fontWeight:"bold",marginBottom:3}}>{a.name} — {a.title}</div>
-                          <div style={{fontSize:11,color:"#aaa",lineHeight:1.6}}>{a.desc}</div>
+                          <div style={{fontSize:16,color:a.color,fontWeight:"bold",marginBottom:3}}>{a.name} — {a.title}</div>
+                          <div style={{fontSize:15,color:"#aaa",lineHeight:1.6}}>{a.desc}</div>
                         </div>
                       ))}
                     </div>
                   )}
                   {cpuNpcStep===2 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>➕ Add Processes</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>➕ Add Processes</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
                         Use the controls panel to add processes. Each process represents a program that needs CPU time.
                       </div>
                       <div style={{background:"rgba(216,80,255,0.1)",border:"1px solid #d850ff44",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>📝 Input Fields Explained:</div>
-                        <div style={{fontSize:12,color:"#c8b0e0",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>📝 Input Fields Explained:</div>
+                        <div style={{fontSize:16,color:"#c8b0e0",lineHeight:2}}>
                           <strong style={{color:"#ffaa88"}}>Arr (Arrival Time)</strong><br/>
                           When this process arrives at the ready queue. Set 0 if all arrive at the same time.<br/><br/>
                           <strong style={{color:"#88ff88"}}>Burst (Burst Time)</strong><br/>
@@ -3489,20 +3537,20 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                           Lower number = higher priority. Only matters for Priority scheduling.
                         </div>
                       </div>
-                      <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:6,padding:10,fontSize:11,color:"#888"}}>
+                      <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:6,padding:10,fontSize:15,color:"#888"}}>
                         💡 Try adding 3–5 processes with different burst times to see interesting scheduling behavior!
                       </div>
                     </div>
                   )}
                   {cpuNpcStep===3 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>📊 Reading the Gantt Chart</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>📊 Reading the Gantt Chart</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
                         After clicking SUBMIT, the Gantt chart shows the <em>execution timeline</em>.
                       </div>
                       <div style={{background:"rgba(216,80,255,0.1)",border:"1px solid #d850ff44",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>🗓️ How to Read the Gantt Chart:</div>
-                        <div style={{fontSize:12,color:"#c8b0e0",lineHeight:1.9}}>
+                        <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>🗓️ How to Read the Gantt Chart:</div>
+                        <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.9}}>
                           • Each <strong style={{color:"#f5c518"}}>colored block</strong> = one process running<br/>
                           • The <strong style={{color:"#f5c518"}}>number inside</strong> = Process ID<br/>
                           • <strong style={{color:"#f5c518"}}>Width</strong> = how long it ran<br/>
@@ -3512,25 +3560,25 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         </div>
                       </div>
                       <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:8,padding:10}}>
-                        <div style={{fontSize:12,color:"#888",fontWeight:"bold",marginBottom:4}}>📖 Example:</div>
+                        <div style={{fontSize:14,color:"#888",fontWeight:"bold",marginBottom:4}}>📖 Example:</div>
                         <div style={{display:"flex",gap:2,height:22,marginBottom:4}}>
                           {[{c:"#ff8888",w:20},{c:"#88ff88",w:12},{c:"#8888ff",w:32}].map((b,i)=>(
-                            <div key={i} style={{flex:`0 0 ${b.w}%`,background:b.c,borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#000",fontWeight:"bold"}}>P{i}</div>
+                            <div key={i} style={{flex:`0 0 ${b.w}%`,background:b.c,borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#000",fontWeight:"bold"}}>P{i}</div>
                           ))}
                         </div>
-                        <div style={{fontSize:11,color:"#888"}}>P0 finishes first, then P1, then P2 runs longest.</div>
+                        <div style={{fontSize:15,color:"#888"}}>P0 finishes first, then P1, then P2 runs longest.</div>
                       </div>
                     </div>
                   )}
                   {cpuNpcStep===4 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>📈 Understanding Metrics</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.75,marginBottom:10}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>📈 Understanding Metrics</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75,marginBottom:10}}>
                         The results table shows per-process stats. Here's how to interpret them:
                       </div>
                       <div style={{background:"rgba(216,80,255,0.1)",border:"1px solid #d850ff44",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>🧮 Formulas:</div>
-                        <div style={{fontSize:12,color:"#c8b0e0",lineHeight:2.1,fontFamily:"monospace"}}>
+                        <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>🧮 Formulas:</div>
+                        <div style={{fontSize:15,color:"#c8b0e0",lineHeight:2.1,fontFamily:"monospace"}}>
                           <span style={{color:"#88ff88"}}>TAT</span> = Completion − Arrival<br/>
                           <span style={{color:"#ffff88"}}>Wait</span> = TAT − Burst Time<br/>
                           <span style={{color:"#ff88ff"}}>Avg Wait</span> = Sum(W) / n<br/>
@@ -3538,28 +3586,28 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         </div>
                       </div>
                       <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:8,padding:10,marginBottom:8}}>
-                        <div style={{fontSize:12,color:"#888",fontWeight:"bold",marginBottom:4}}>📌 What's Good?</div>
-                        <div style={{fontSize:12,color:"#bbb",lineHeight:1.8}}>
+                        <div style={{fontSize:14,color:"#888",fontWeight:"bold",marginBottom:4}}>📌 What's Good?</div>
+                        <div style={{fontSize:15,color:"#bbb",lineHeight:1.8}}>
                           ✅ <strong style={{color:"#4bfa7f"}}>Lower Avg Wait</strong> = processes wait less<br/>
                           ✅ <strong style={{color:"#4bfa7f"}}>Lower Avg TAT</strong> = faster total throughput<br/>
                           ⚠️ <strong style={{color:"#ffaa44"}}>High wait</strong> = poor user experience<br/>
                           ⚠️ <strong style={{color:"#ffaa44"}}>Starvation</strong> = some never run
                         </div>
                       </div>
-                      <div style={{fontSize:11,color:"#a060c0",fontStyle:"italic"}}>
+                      <div style={{fontSize:15,color:"#a060c0",fontStyle:"italic"}}>
                         💡 The AVG WAIT and AVG TAT shown at the top are the key indicators of algorithm performance!
                       </div>
                     </div>
                   )}
                   {cpuNpcStep===5 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>⚔️ Compare All Algorithms</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.75,marginBottom:10}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>⚔️ Compare All Algorithms</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75,marginBottom:10}}>
                         Click the <strong style={{color:"#5cbfff"}}>📊 COMPARE</strong> button to see how all algorithms perform on the same set of processes!
                       </div>
                       <div style={{background:"rgba(216,80,255,0.1)",border:"1px solid #d850ff44",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>🏆 Algorithm Trade-offs:</div>
-                        <div style={{fontSize:12,color:"#c8b0e0",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>🏆 Algorithm Trade-offs:</div>
+                        <div style={{fontSize:15,color:"#c8b0e0",lineHeight:2}}>
                           • <strong style={{color:"#ff8888"}}>FCFS</strong> — Simple, but convoy effect<br/>
                           • <strong style={{color:"#88ff88"}}>SJF</strong> — Best avg wait (non-preemptive)<br/>
                           • <strong style={{color:"#88aaff"}}>SRTF</strong> — Optimal avg wait (preemptive)<br/>
@@ -3568,8 +3616,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         </div>
                       </div>
                       <div style={{background:"rgba(245,197,24,0.08)",border:"1px solid #f5c51844",borderRadius:6,padding:10}}>
-                        <div style={{fontSize:12,color:"#f5c518",fontWeight:"bold",marginBottom:4}}>💡 When to Use What?</div>
-                        <div style={{fontSize:11,color:"#bbb",lineHeight:1.75}}>
+                        <div style={{fontSize:14,color:"#f5c518",fontWeight:"bold",marginBottom:4}}>💡 When to Use What?</div>
+                        <div style={{fontSize:14,color:"#bbb",lineHeight:1.75}}>
                           Batch jobs → SJF/SRTF<br/>
                           Interactive → Round Robin<br/>
                           Real-time → Priority<br/>
@@ -3580,13 +3628,13 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                   )}
                   {cpuNpcStep===6 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>🎓 CPU Scheduling Mastery!</div>
-                      <div style={{fontSize:13,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#d850ff",marginBottom:10}}>🎓 CPU Scheduling Mastery!</div>
+                      <div style={{fontSize:16,color:"#c8b0e0",lineHeight:1.75,marginBottom:12}}>
                         Excellent work! You now understand how operating systems schedule processes.
                       </div>
                       <div style={{background:"rgba(75,250,127,0.08)",border:"1px solid #4bfa7f44",borderRadius:8,padding:12,marginBottom:12}}>
-                        <div style={{fontSize:12,color:"#4bfa7f",fontWeight:"bold",marginBottom:8}}>✅ You've Learned:</div>
-                        <div style={{fontSize:12,color:"#c8b0e0",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#4bfa7f",fontWeight:"bold",marginBottom:8}}>✅ You've Learned:</div>
+                        <div style={{fontSize:15,color:"#c8b0e0",lineHeight:2}}>
                           ✓ What CPU scheduling is<br/>
                           ✓ FCFS, SJF, SRTF, RR, Priority<br/>
                           ✓ How to read a Gantt chart<br/>
@@ -3595,8 +3643,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         </div>
                       </div>
                       <div style={{background:"rgba(216,80,255,0.1)",border:"1px solid #d850ff",borderRadius:8,padding:12,textAlign:"center"}}>
-                        <div style={{fontSize:13,color:"#d850ff",marginBottom:6}}>🌟 Ready to complete?</div>
-                        <div style={{fontSize:11,color:"#a060c0"}}>Click <strong style={{color:"#4bfa7f"}}>✓ COMPLETE +50XP</strong> at the top to earn your reward!</div>
+                        <div style={{fontSize:16,color:"#d850ff",marginBottom:6}}>🌟 Ready to complete?</div>
+                        <div style={{fontSize:15,color:"#a060c0"}}>Click <strong style={{color:"#4bfa7f"}}>✓ COMPLETE +50XP</strong> at the top to earn your reward!</div>
                       </div>
                     </div>
                   )}
@@ -3609,41 +3657,41 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               <div style={{background:"linear-gradient(180deg,rgba(92,191,255,0.08),rgba(50,100,150,0.05))",borderRight:"2px solid #5cbfff44",display:"flex",flexDirection:"column",overflow:"hidden"}}>
                 {/* NPC Header */}
                 <div style={{padding:"14px 16px",borderBottom:"1px solid #5cbfff33",background:"rgba(92,191,255,0.12)",display:"flex",alignItems:"center",gap:12}}>
-                  <span style={{fontSize:32}}>🧝</span>
+                  <span style={{fontSize:40}}>🧝</span>
                   <div>
-                    <div className="cinzel" style={{fontSize:14,color:"#5cbfff",fontWeight:"bold"}}>Memory Mystic</div>
-                    <div style={{fontSize:11,color:"#6090a0"}}>Memory Management Teacher</div>
+                    <div className="cinzel" style={{fontSize:18,color:"#5cbfff",fontWeight:"bold"}}>Memory Mystic</div>
+                    <div style={{fontSize:15,color:"#6090a0"}}>Memory Management Teacher</div>
                   </div>
                 </div>
 
                 {/* Step Navigation */}
                 <div style={{padding:"10px 14px",borderBottom:"1px solid #5cbfff22",display:"flex",alignItems:"center",gap:6}}>
-                  <button style={{background:"#5cbfff22",border:"1px solid #5cbfff",color:"#5cbfff",cursor:"pointer",padding:"4px 10px",borderRadius:4,fontSize:13,fontWeight:"bold"}} onClick={()=>setMemNpcStep(Math.max(0,memNpcStep-1))}>‹</button>
+                  <button style={{background:"#5cbfff22",border:"1px solid #5cbfff",color:"#5cbfff",cursor:"pointer",padding:"6px 12px",borderRadius:4,fontSize:15,fontWeight:"bold"}} onClick={()=>setMemNpcStep(Math.max(0,memNpcStep-1))}>‹</button>
                   <div style={{display:"flex",gap:3,flex:1,justifyContent:"center"}}>
                     {[0,1,2,3,4,5].map(s=>(
-                      <div key={s} onClick={()=>setMemNpcStep(s)} style={{width:18,height:18,borderRadius:"50%",background:s<=memNpcStep?"#5cbfff":"#333",border:`1px solid ${s<=memNpcStep?"#5cbfff":"#555"}`,cursor:"pointer",fontSize:9,display:"flex",alignItems:"center",justifyContent:"center",color:s<=memNpcStep?"#000":"#777",fontWeight:"bold"}}>{s+1}</div>
+                      <div key={s} onClick={()=>setMemNpcStep(s)} style={{width:22,height:22,borderRadius:"50%",background:s<=memNpcStep?"#5cbfff":"#333",border:`1px solid ${s<=memNpcStep?"#5cbfff":"#555"}`,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",color:s<=memNpcStep?"#000":"#777",fontWeight:"bold"}}>{s+1}</div>
                     ))}
                   </div>
-                  <button style={{background:"#5cbfff22",border:"1px solid #5cbfff",color:"#5cbfff",cursor:"pointer",padding:"4px 10px",borderRadius:4,fontSize:13,fontWeight:"bold"}} onClick={()=>setMemNpcStep(Math.min(5,memNpcStep+1))}>›</button>
+                  <button style={{background:"#5cbfff22",border:"1px solid #5cbfff",color:"#5cbfff",cursor:"pointer",padding:"6px 12px",borderRadius:4,fontSize:15,fontWeight:"bold"}} onClick={()=>setMemNpcStep(Math.min(5,memNpcStep+1))}>›</button>
                 </div>
 
                 {/* Teaching Content */}
                 <div style={{flex:1,overflowY:"auto",padding:"14px"}}>
                   {memNpcStep===0 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>💾 Welcome to Memory Management!</div>
-                      <div style={{fontSize:13,color:"#a8d0e8",lineHeight:1.8,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>💾 Welcome to Memory Management!</div>
+                      <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.8,marginBottom:12}}>
                         I'm Memory Mystic! I'll teach you how operating systems allocate RAM to running programs.
                       </div>
                       <div style={{background:"rgba(92,191,255,0.1)",border:"1px solid #5cbfff44",borderRadius:8,padding:12,marginBottom:12}}>
-                        <div style={{fontSize:12,color:"#5cbfff",fontWeight:"bold",marginBottom:6}}>🧠 What is Memory Allocation?</div>
-                        <div style={{fontSize:12,color:"#a8d0e8",lineHeight:1.75}}>
+                        <div style={{fontSize:16,color:"#5cbfff",fontWeight:"bold",marginBottom:6}}>🧠 What is Memory Allocation?</div>
+                        <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75}}>
                           When you open a program, the OS must find free space in RAM and assign it. This is called <strong style={{color:"#f5c518"}}>memory allocation</strong>.
                         </div>
                       </div>
                       <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:8,padding:12}}>
-                        <div style={{fontSize:12,color:"#888",fontWeight:"bold",marginBottom:6}}>📋 Key Terms:</div>
-                        <div style={{fontSize:12,color:"#bbb",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#888",fontWeight:"bold",marginBottom:6}}>📋 Key Terms:</div>
+                        <div style={{fontSize:16,color:"#bbb",lineHeight:2}}>
                           • <strong style={{color:"#ffaa88"}}>Frame</strong> — fixed-size block of physical RAM<br/>
                           • <strong style={{color:"#88ff88"}}>Page</strong> — fixed-size block of a process<br/>
                           • <strong style={{color:"#88aaff"}}>Page Size</strong> — frame/page size in MB<br/>
@@ -3655,27 +3703,27 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                   )}
                   {memNpcStep===1 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>➕ Adding Jobs to Memory</div>
-                      <div style={{fontSize:13,color:"#a8d0e8",lineHeight:1.75,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>➕ Adding Jobs to Memory</div>
+                      <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75,marginBottom:12}}>
                         Each <strong style={{color:"#f5c518"}}>job</strong> is a program that needs RAM. Add jobs in the center panel!
                       </div>
                       <div style={{background:"rgba(92,191,255,0.1)",border:"1px solid #5cbfff44",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#5cbfff",fontWeight:"bold",marginBottom:8}}>📝 Input Fields:</div>
-                        <div style={{fontSize:12,color:"#a8d0e8",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#5cbfff",fontWeight:"bold",marginBottom:8}}>📝 Input Fields:</div>
+                        <div style={{fontSize:16,color:"#a8d0e8",lineHeight:2}}>
                           <strong style={{color:"#ffaa88"}}>Name</strong> — label for the job (e.g. "Browser")<br/>
                           <strong style={{color:"#88ff88"}}>Size (MB)</strong> — how much RAM it needs<br/><br/>
                           The OS will allocate enough <strong style={{color:"#f5c518"}}>frames</strong> to cover the job's size. If the job is 200 MB and each frame is 64 MB, it needs <strong style={{color:"#f5c518"}}>4 frames</strong> (256 MB total — 56 MB wasted internally).
                         </div>
                       </div>
-                      <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:6,padding:10,fontSize:11,color:"#888"}}>
+                      <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:6,padding:10,fontSize:15,color:"#888"}}>
                         💡 Try adding jobs of different sizes — small (64 MB), medium (200 MB), large (512 MB) — to see how fragmentation changes!
                       </div>
                     </div>
                   )}
                   {memNpcStep===2 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🎛️ Allocation Strategies</div>
-                      <div style={{fontSize:13,color:"#a8d0e8",lineHeight:1.75,marginBottom:10}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🎛️ Allocation Strategies</div>
+                      <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75,marginBottom:10}}>
                         The <strong style={{color:"#f5c518"}}>strategy</strong> determines <em>which</em> free block is chosen for each job.
                       </div>
                       {[
@@ -3684,65 +3732,65 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         {name:"Worst Fit",key:"worst-fit",color:"#ff5577",desc:"Picks the LARGEST available hole. Leaves big remaining chunks — useful when future jobs will be large."},
                       ].map(s=>(
                         <div key={s.key} style={{background:"rgba(0,0,0,0.3)",border:`1px solid ${s.color}44`,borderRadius:6,padding:"8px 10px",marginBottom:8}}>
-                          <div style={{fontSize:12,color:s.color,fontWeight:"bold",marginBottom:4}}>{s.name}</div>
-                          <div style={{fontSize:11,color:"#aaa",lineHeight:1.65}}>{s.desc}</div>
+                          <div style={{fontSize:16,color:s.color,fontWeight:"bold",marginBottom:4}}>{s.name}</div>
+                          <div style={{fontSize:15,color:"#aaa",lineHeight:1.65}}>{s.desc}</div>
                         </div>
                       ))}
                     </div>
                   )}
                   {memNpcStep===3 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🗺️ Reading the Memory Map</div>
-                      <div style={{fontSize:13,color:"#a8d0e8",lineHeight:1.75,marginBottom:10}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🗺️ Reading the Memory Map</div>
+                      <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75,marginBottom:10}}>
                         The <strong style={{color:"#f5c518"}}>Memory Map</strong> on the right shows how RAM frames are used.
                       </div>
                       <div style={{background:"rgba(92,191,255,0.1)",border:"1px solid #5cbfff44",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#5cbfff",fontWeight:"bold",marginBottom:8}}>🎨 Color Legend:</div>
-                        <div style={{fontSize:12,color:"#a8d0e8",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#5cbfff",fontWeight:"bold",marginBottom:8}}>🎨 Color Legend:</div>
+                        <div style={{fontSize:16,color:"#a8d0e8",lineHeight:2}}>
                           <span style={{background:"#ff8888",padding:"1px 8px",borderRadius:3,marginRight:6,color:"#000"}}>COLOR</span> = frame allocated to a job<br/>
                           <span style={{background:"#222",padding:"1px 8px",borderRadius:3,marginRight:6,border:"1px solid #444",color:"#666"}}>dark</span> = frame is free<br/><br/>
                           Each row = one frame. The label shows which job occupies it. <strong style={{color:"#f5c518"}}>Dashes (—)</strong> = empty frame.
                         </div>
                       </div>
-                      <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:6,padding:10,fontSize:11,color:"#888",lineHeight:1.65}}>
+                      <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid #555",borderRadius:6,padding:10,fontSize:15,color:"#888",lineHeight:1.65}}>
                         The stats at the top show: total RAM used, free RAM, internal waste (rounded-up pages), and utilization %.
                       </div>
                     </div>
                   )}
                   {memNpcStep===4 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🔍 Understanding Fragmentation</div>
-                      <div style={{fontSize:13,color:"#a8d0e8",lineHeight:1.75,marginBottom:10}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🔍 Understanding Fragmentation</div>
+                      <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75,marginBottom:10}}>
                         Fragmentation is wasted memory. There are two types:
                       </div>
                       <div style={{background:"rgba(255,170,68,0.1)",border:"1px solid #ffaa4444",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#ffaa44",fontWeight:"bold",marginBottom:6}}>📦 Internal Fragmentation</div>
-                        <div style={{fontSize:12,color:"#a8d0e8",lineHeight:1.75}}>
+                        <div style={{fontSize:16,color:"#ffaa44",fontWeight:"bold",marginBottom:6}}>📦 Internal Fragmentation</div>
+                        <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75}}>
                           Happens when a job doesn't perfectly fill its allocated frames.<br/><br/>
                           Example: Job needs 70 MB, page size is 64 MB → needs 2 pages (128 MB) → <strong style={{color:"#ff8888"}}>58 MB wasted</strong> inside the second frame.
                         </div>
                       </div>
                       <div style={{background:"rgba(255,85,119,0.1)",border:"1px solid #ff557744",borderRadius:8,padding:12,marginBottom:10}}>
-                        <div style={{fontSize:12,color:"#ff5577",fontWeight:"bold",marginBottom:6}}>🧩 External Fragmentation</div>
-                        <div style={{fontSize:12,color:"#a8d0e8",lineHeight:1.75}}>
+                        <div style={{fontSize:16,color:"#ff5577",fontWeight:"bold",marginBottom:6}}>🧩 External Fragmentation</div>
+                        <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75}}>
                           Free memory exists but it's scattered in small pieces that can't satisfy a large request.<br/><br/>
                           Example: 200 MB free total, but split into 20 tiny chunks — a 100 MB job can't fit!
                         </div>
                       </div>
-                      <div style={{fontSize:11,color:"#6090a0",fontStyle:"italic"}}>
+                      <div style={{fontSize:15,color:"#6090a0",fontStyle:"italic"}}>
                         💡 Try removing a middle job and adding a large one — watch external fragmentation appear!
                       </div>
                     </div>
                   )}
                   {memNpcStep===5 && (
                     <div>
-                      <div style={{fontSize:15,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🎓 Memory Management Mastery!</div>
-                      <div style={{fontSize:13,color:"#a8d0e8",lineHeight:1.75,marginBottom:12}}>
+                      <div style={{fontSize:19,fontWeight:"bold",color:"#5cbfff",marginBottom:10}}>🎓 Memory Management Mastery!</div>
+                      <div style={{fontSize:16,color:"#a8d0e8",lineHeight:1.75,marginBottom:12}}>
                         Outstanding! You've mastered memory allocation concepts.
                       </div>
                       <div style={{background:"rgba(75,250,127,0.08)",border:"1px solid #4bfa7f44",borderRadius:8,padding:12,marginBottom:12}}>
-                        <div style={{fontSize:12,color:"#4bfa7f",fontWeight:"bold",marginBottom:8}}>✅ You've Learned:</div>
-                        <div style={{fontSize:12,color:"#a8d0e8",lineHeight:2}}>
+                        <div style={{fontSize:16,color:"#4bfa7f",fontWeight:"bold",marginBottom:8}}>✅ You've Learned:</div>
+                        <div style={{fontSize:16,color:"#a8d0e8",lineHeight:2}}>
                           ✓ What memory allocation is<br/>
                           ✓ Frames, pages, and page size<br/>
                           ✓ First Fit, Best Fit, Worst Fit<br/>
@@ -3751,8 +3799,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                         </div>
                       </div>
                       <div style={{background:"rgba(92,191,255,0.1)",border:"1px solid #5cbfff",borderRadius:8,padding:12,textAlign:"center"}}>
-                        <div style={{fontSize:13,color:"#5cbfff",marginBottom:6}}>🌟 Ready to complete?</div>
-                        <div style={{fontSize:11,color:"#6090a0"}}>Click <strong style={{color:"#4bfa7f"}}>✓ COMPLETE +50XP</strong> at the top!</div>
+                        <div style={{fontSize:16,color:"#5cbfff",marginBottom:6}}>🌟 Ready to complete?</div>
+                        <div style={{fontSize:15,color:"#6090a0"}}>Click <strong style={{color:"#4bfa7f"}}>✓ COMPLETE +50XP</strong> at the top!</div>
                       </div>
                     </div>
                   )}
@@ -3768,31 +3816,31 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 <div style={{overflowY:"auto",flex:1,paddingRight:"4px"}}>
                   {/* Algorithm */}
                   <div style={{padding:"14px 12px",borderBottom:"1px solid #333"}}>
-                    <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:8,letterSpacing:1}}>ALGORITHM</div>
+                    <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:8,letterSpacing:1}}>ALGORITHM</div>
                     {["FCFS","SJF","SRTF","RR","Priority"].map(algo=>(
                       <button key={algo} className="btn" style={{width:"100%",textAlign:"center",margin:"4px 0",padding:"9px",
-                        background:cpuAlgorithm===algo?"#d850ff33":"transparent",fontSize:11,fontWeight:600,
+                        background:cpuAlgorithm===algo?"#d850ff33":"transparent",fontSize:14,fontWeight:600,
                         color:cpuAlgorithm===algo?"#d850ff":"#999",borderColor:cpuAlgorithm===algo?"#d850ff":"#555"}}
                         onClick={()=>setCpuAlgorithm(algo)}>{algo}</button>
                     ))}
                     {cpuAlgorithm==="RR"&&(
                       <div style={{marginTop:8}}>
-                        <div style={{fontSize:10,color:"#888",marginBottom:4}}>Time Quantum:</div>
+                        <div style={{fontSize:14,color:"#888",marginBottom:4}}>Time Quantum:</div>
                         <input type="number" min="1" max="5" value={cpuTimeQuantum} onChange={e=>setCpuTimeQuantum(Number(e.target.value))}
-                          style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:12,fontWeight:"bold"}}/>
+                          style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:14,fontWeight:"bold"}}/>
                       </div>
                     )}
                   </div>
 
                   {/* Add Process */}
                   <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Arrival Time:</div>
-                    <input type="number" value={cpuNewArrival} onChange={e=>setCpuNewArrival(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:12,marginBottom:8}}/>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Burst Time:</div>
-                    <input type="number" value={cpuNewBurst} onChange={e=>setCpuNewBurst(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:12,marginBottom:8}}/>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Priority:</div>
-                    <input type="number" value={cpuNewPriority} onChange={e=>setCpuNewPriority(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:12,marginBottom:10}}/>
-                    <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:12,fontWeight:"bold"}} onClick={()=>{
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Arrival Time:</div>
+                    <input type="number" value={cpuNewArrival} onChange={e=>setCpuNewArrival(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Burst Time:</div>
+                    <input type="number" value={cpuNewBurst} onChange={e=>setCpuNewBurst(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Priority:</div>
+                    <input type="number" value={cpuNewPriority} onChange={e=>setCpuNewPriority(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#d850ff",border:"1px solid #555",fontSize:14,marginBottom:10}}/>
+                    <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:14,fontWeight:"bold"}} onClick={()=>{
                       const newId = Math.max(...cpuProcesses.map(p=>p.id),0)+1;
                       setCpuProcesses([...cpuProcesses,{id:newId,arrivalTime:cpuNewArrival,burstTime:cpuNewBurst,priority:cpuNewPriority}]);
                       setCpuNewArrival(0);setCpuNewBurst(3);setCpuNewPriority(1);
@@ -3802,11 +3850,11 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
                   {/* Processes List */}
                   <div style={{padding:"10px 12px"}}>
-                    <div style={{fontSize:12,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>Processes ({cpuProcesses.length})</div>
+                    <div style={{fontSize:16,color:"#d850ff",fontWeight:"bold",marginBottom:8}}>Processes ({cpuProcesses.length})</div>
                     {cpuProcesses.map((p,i)=>(
-                      <div key={i} style={{fontSize:11,color:"#bbb",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"rgba(0,0,0,0.4)",borderRadius:4}}>
+                      <div key={i} style={{fontSize:15,color:"#bbb",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"rgba(0,0,0,0.4)",borderRadius:4}}>
                         <span style={{color:colors[p.id%colors.length],fontWeight:"bold"}}>P{p.id}: B{p.burstTime}</span>
-                        <button className="btn" style={{padding:"4px 8px",fontSize:9,color:"#f88",borderColor:"#f884"}} onClick={()=>setCpuProcesses(cpuProcesses.filter((_,j)=>j!==i))}>✕</button>
+                        <button className="btn" style={{padding:"4px 8px",fontSize:13,color:"#f88",borderColor:"#f884"}} onClick={()=>setCpuProcesses(cpuProcesses.filter((_,j)=>j!==i))}>✕</button>
                       </div>
                     ))}
                   </div>
@@ -3814,7 +3862,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
                 {/* Bottom Buttons */}
                 <div style={{padding:"10px 12px",borderTop:"1px solid #333",display:"flex",flexDirection:"column",gap:6}}>
-                  <button className="btn btn-purple" style={{width:"100%",padding:"10px",fontSize:12,fontWeight:"bold"}} onClick={()=>{
+                  <button className="btn btn-purple" style={{width:"100%",padding:"10px",fontSize:14,fontWeight:"bold"}} onClick={()=>{
+                    if(cpuProcesses.length === 0) return;
                     let result;
                     if(cpuAlgorithm==="FCFS") result = computeFCFS(cpuProcesses);
                     else if(cpuAlgorithm==="SJF") result = computeSJF_NP(cpuProcesses);
@@ -3824,7 +3873,7 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                     setCpuResults(result);
                     if(cpuNpcStep<=2) setCpuNpcStep(3);
                   }}>✓ SUBMIT</button>
-                  <button className="btn" style={{width:"100%",padding:"10px",fontSize:11,color:"#b0b0b0",fontWeight:"bold"}} onClick={()=>{
+                  <button className="btn" style={{width:"100%",padding:"10px",fontSize:14,color:"#b0b0b0",fontWeight:"bold"}} onClick={()=>{
                     setCpuProcesses([{id:0,arrivalTime:0,burstTime:5,priority:1},{id:1,arrivalTime:0,burstTime:3,priority:2},{id:2,arrivalTime:0,burstTime:8,priority:3},{id:3,arrivalTime:0,burstTime:2,priority:1}]);
                     setCpuResults(null);
                     setCpuCompareResults(null);
@@ -3839,13 +3888,13 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 <div style={{overflowY:"auto",flex:1,paddingRight:"4px"}}>
                   {/* Settings */}
                   <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Total RAM (MB):</div>
-                    <input type="number" value={memTotalRam} onChange={e=>setMemTotalRam(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:12,marginBottom:8}}/>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Page Size (MB):</div>
-                    <input type="number" value={memPageSize} onChange={e=>setMemPageSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:12,marginBottom:8}}/>
-                    <div style={{fontSize:11,color:"#58ff89",fontWeight:"bold",marginBottom:6}}>STRATEGY</div>
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Total RAM (MB):</div>
+                    <input type="number" value={memTotalRam} onChange={e=>setMemTotalRam(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Page Size (MB):</div>
+                    <input type="number" value={memPageSize} onChange={e=>setMemPageSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                    <div style={{fontSize:15,color:"#58ff89",fontWeight:"bold",marginBottom:6}}>STRATEGY</div>
                     {["first-fit","best-fit","worst-fit"].map(s=>(
-                      <button key={s} className="btn" style={{width:"100%",textAlign:"center",margin:"4px 0",padding:"8px",fontSize:10,fontWeight:600,
+                      <button key={s} className="btn" style={{width:"100%",textAlign:"center",margin:"4px 0",padding:"8px",fontSize:14,fontWeight:600,
                         background:memStrategy===s?"#58ff8933":"transparent",
                         color:memStrategy===s?"#58ff89":"#999",borderColor:memStrategy===s?"#58ff89":"#555"}}
                         onClick={()=>{setMemStrategy(s);if(memNpcStep===2) setMemNpcStep(3);}}>{s}</button>
@@ -3854,11 +3903,11 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
                   {/* Add Job */}
                   <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Job Name:</div>
-                    <input type="text" placeholder="e.g., Browser" value={memNewName} onChange={e=>setMemNewName(e.target.value)} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:11,marginBottom:8}}/>
-                    <div style={{fontSize:11,color:"#888",marginBottom:5,fontWeight:"bold"}}>Size (MB):</div>
-                    <input type="number" min="16" value={memNewSize} onChange={e=>setMemNewSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:12,marginBottom:10}}/>
-                    <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:12,fontWeight:"bold"}} onClick={()=>{
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Job Name:</div>
+                    <input type="text" placeholder="e.g., Browser" value={memNewName} onChange={e=>setMemNewName(e.target.value)} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Size (MB):</div>
+                    <input type="number" min="16" value={memNewSize} onChange={e=>setMemNewSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:10}}/>
+                    <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:14,fontWeight:"bold"}} onClick={()=>{
                       if(memNewName.trim()) {
                         const newId = Math.max(...memJobs.map(j=>j.id),0)+1;
                         setMemJobs([...memJobs,{id:newId,name:memNewName,size:memNewSize,color:colors[newId%colors.length]}]);
@@ -3871,11 +3920,11 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
                   {/* Jobs List */}
                   <div style={{padding:"10px 12px"}}>
-                    <div style={{fontSize:12,color:"#58ff89",fontWeight:"bold",marginBottom:8}}>Jobs ({memJobs.length})</div>
+                    <div style={{fontSize:16,color:"#58ff89",fontWeight:"bold",marginBottom:8}}>Jobs ({memJobs.length})</div>
                     {memJobs.map(j=>(
-                      <div key={j.id} style={{fontSize:11,color:"#bbb",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"rgba(0,0,0,0.4)",borderRadius:4}}>
+                      <div key={j.id} style={{fontSize:15,color:"#bbb",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"rgba(0,0,0,0.4)",borderRadius:4}}>
                         <span style={{color:j.color,fontWeight:"bold"}}>{j.name} ({j.size}MB)</span>
-                        <button className="btn" style={{padding:"4px 8px",fontSize:9,color:"#f88",borderColor:"#f884"}} onClick={()=>{
+                        <button className="btn" style={{padding:"4px 8px",fontSize:13,color:"#f88",borderColor:"#f884"}} onClick={()=>{
                           setMemJobs(memJobs.filter(x=>x.id!==j.id));
                           if(memNpcStep===3) setMemNpcStep(4);
                         }}>✕</button>
@@ -3895,12 +3944,12 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                 {cpuResults && (
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,padding:"12px",borderBottom:"1px solid #333",flex:"0 0 auto"}}>
                     <div style={{background:"rgba(92,191,255,0.05)",padding:10,borderRadius:4,border:"1px solid #5cbfff33"}}>
-                      <div style={{color:"#888",fontSize:11,marginBottom:6,fontWeight:"bold"}}>AVG WAIT</div>
-                      <div style={{color:"#ffaa88",fontWeight:"bold",fontSize:14}}>{cpuResults.avgWait.toFixed(1)}ms</div>
+                      <div style={{color:"#888",fontSize:14,marginBottom:6,fontWeight:"bold"}}>AVG WAIT</div>
+                      <div style={{color:"#ffaa88",fontWeight:"bold",fontSize:16}}>{cpuResults.avgWait.toFixed(1)}ms</div>
                     </div>
                     <div style={{background:"rgba(92,191,255,0.05)",padding:10,borderRadius:4,border:"1px solid #5cbfff33"}}>
-                      <div style={{color:"#888",fontSize:11,marginBottom:6,fontWeight:"bold"}}>AVG TAT</div>
-                      <div style={{color:"#88aaff",fontWeight:"bold",fontSize:14}}>{cpuResults.avgTurnaround.toFixed(1)}ms</div>
+                      <div style={{color:"#888",fontSize:14,marginBottom:6,fontWeight:"bold"}}>AVG TAT</div>
+                      <div style={{color:"#88aaff",fontWeight:"bold",fontSize:16}}>{cpuResults.avgTurnaround.toFixed(1)}ms</div>
                     </div>
                   </div>
                 )}
@@ -3913,49 +3962,57 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
 
                   {cpuResults && !cpuCompareResults && (
                     <div style={{padding:"12px"}}>
-                      <table style={{width:"100%",fontSize:11,color:"#aaa",borderCollapse:"collapse"}}>
+                      <table style={{width:"100%",fontSize:15,color:"#aaa",borderCollapse:"collapse"}}>
                         <thead><tr style={{borderBottom:"1px solid #555",stickyTop:0,background:"rgba(92,191,255,0.08)"}}>
-                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:12,fontWeight:"bold"}}>P</th>
-                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:12,fontWeight:"bold"}}>A</th>
-                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:12,fontWeight:"bold"}}>B</th>
-                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:12,fontWeight:"bold"}}>C</th>
-                          <th style={{textAlign:"left",padding:"6px",color:"#88ff88",fontSize:12,fontWeight:"bold"}}>TAT</th>
-                          <th style={{textAlign:"left",padding:"6px",color:"#ffff88",fontSize:12,fontWeight:"bold"}}>W</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:15,fontWeight:"bold"}}>P</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:15,fontWeight:"bold"}}>A</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:15,fontWeight:"bold"}}>B</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#5cbfff",fontSize:15,fontWeight:"bold"}}>C</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#88ff88",fontSize:15,fontWeight:"bold"}}>TAT</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#ffff88",fontSize:15,fontWeight:"bold"}}>W</th>
                         </tr></thead>
                         <tbody>
                           {cpuResults.results.map(r=>(
                             <tr key={r.id} style={{borderBottom:"1px solid #333"}}>
-                              <td style={{padding:"6px",color:"#d850ff",fontSize:11,fontWeight:"bold"}}>{r.id}</td>
-                              <td style={{padding:"6px",fontSize:11}}>{r.arrival}</td>
-                              <td style={{padding:"6px",fontSize:11}}>{r.burst}</td>
-                              <td style={{padding:"6px",fontSize:11}}>{r.completion.toFixed(0)}</td>
-                              <td style={{padding:"6px",color:"#88ff88",fontSize:11}}>{r.turnaround.toFixed(1)}</td>
-                              <td style={{padding:"6px",color:"#ffff88",fontSize:11}}>{r.wait.toFixed(1)}</td>
+                              <td style={{padding:"6px",color:"#d850ff",fontSize:15,fontWeight:"bold"}}>{r.id}</td>
+                              <td style={{padding:"6px",fontSize:15}}>{r.arrival}</td>
+                              <td style={{padding:"6px",fontSize:15}}>{r.burst}</td>
+                              <td style={{padding:"6px",fontSize:15}}>{r.completion.toFixed(0)}</td>
+                              <td style={{padding:"6px",color:"#88ff88",fontSize:15}}>{r.turnaround.toFixed(1)}</td>
+                              <td style={{padding:"6px",color:"#ffff88",fontSize:15}}>{r.wait.toFixed(1)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                       <div style={{marginTop:10,background:"rgba(92,191,255,0.1)",border:"1px solid #5cbfff44",borderRadius:4,padding:10}}>
-                        <div style={{fontSize:11,color:"#5cbfff",fontWeight:"bold",marginBottom:8}}>Gantt Chart</div>
+                        <div style={{fontSize:15,color:"#5cbfff",fontWeight:"bold",marginBottom:8}}>Gantt Chart</div>
                         <div style={{display:"flex",height:40,gap:2,overflowX:"auto"}}>
                           {cpuResults.gantt.map((seg,i)=>{
                             const maxEnd = Math.max(...cpuResults.gantt.map(g=>g.end));
                             const width = (seg.end - seg.start) / maxEnd * 100;
-                            return <div key={i} style={{flex:`0 0 ${width}%`,background:seg.color,border:"1px solid #999",borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#000",fontWeight:"bold",minWidth:20}}>{seg.id}</div>;
+                            return <div key={i} style={{flex:`0 0 ${width}%`,background:seg.color,border:"1px solid #999",borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#000",fontWeight:"bold",minWidth:20}}>{seg.id}</div>;
                           })}
                         </div>
                       </div>
+                      {/* step-by-step computation */}
+                      <div style={{marginTop:12,background:"rgba(40,40,40,0.6)",border:"1px solid #5cbfff33",borderRadius:4,padding:10,fontSize:15,color:"#c8b0e0"}}>
+                        <div style={{fontWeight:"bold",marginBottom:6}}>How it was computed:</div>
+                        {cpuResults.results.map(r=>{
+                          const tat = r.turnaround;
+                          const wait = r.wait;
+                          return (
+                            <div key={r.id} style={{marginBottom:4}}>
+                              P{r.id}: TAT = {r.completion} - {r.arrival} = {tat.toFixed(1)}; Wait = {tat.toFixed(1)} - {r.burst} = {wait.toFixed(1)}
+                            </div>
+                          );
+                        })}
+                        <div style={{marginTop:6,borderTop:"1px solid #555",paddingTop:6,fontFamily:"monospace"}}>
+                          Avg Wait = ({cpuResults.results.map(r=>r.wait.toFixed(1)).join(" + ")}) / {cpuResults.results.length} = {cpuResults.avgWait.toFixed(2)}ms<br/>
+                          Avg TAT = ({cpuResults.results.map(r=>r.turnaround.toFixed(1)).join(" + ")}) / {cpuResults.results.length} = {cpuResults.avgTurnaround.toFixed(2)}ms
+                        </div>
+                      </div>
                       <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:12,marginTop:12,fontWeight:"bold"}} onClick={()=>{
-                        const algos = ["FCFS","SJF","SRTF","RR","Priority"];
-                        const results = {};
-                        algos.forEach(a=>{
-                          if(a==="FCFS") results[a] = computeFCFS(cpuProcesses);
-                          else if(a==="SJF") results[a] = computeSJF_NP(cpuProcesses);
-                          else if(a==="SRTF") results[a] = computeSRTF(cpuProcesses);
-                          else if(a==="RR") results[a] = computeRR(cpuProcesses,2);
-                          else results[a] = computePriority(cpuProcesses);
-                        });
-                        setCpuCompareResults(results);
+                        setShowAlgoArena(true);
                         if(cpuNpcStep<=4) setCpuNpcStep(5);
                       }}>📊 COMPARE ALL ALGORITHMS</button>
                     </div>
@@ -3964,27 +4021,58 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                   {cpuCompareResults && (
                     <div style={{padding:"12px"}}>
                       <button className="btn" style={{width:"100%",padding:"8px",fontSize:11,marginBottom:10,color:"#999",fontWeight:"bold"}} onClick={()=>setCpuCompareResults(null)}>← Back to Results</button>
-                      <table style={{width:"100%",fontSize:11,color:"#aaa",borderCollapse:"collapse"}}>
-                        <thead><tr style={{background:"rgba(92,191,255,0.08)",borderBottom:"2px solid #555"}}>
-                          <th style={{padding:8,textAlign:"left",color:"#d850ff",fontSize:12,fontWeight:"bold"}}>Algorithm</th>
-                          <th style={{padding:8,textAlign:"right",color:"#ffaa88",fontSize:12,fontWeight:"bold"}}>Avg Wait</th>
-                          <th style={{padding:8,textAlign:"right",color:"#88aaff",fontSize:12,fontWeight:"bold"}}>Avg TAT</th>
-                          <th style={{padding:8,textAlign:"right",color:"#f5c518",fontSize:12,fontWeight:"bold"}}>Score</th>
-                        </tr></thead>
-                        <tbody>
-                          {Object.entries(cpuCompareResults).map(([algo,r])=>{
-                            const score = (100/(r.avgWait+1))*(100/(r.avgTurnaround+1));
-                            return (
-                              <tr key={algo} style={{borderBottom:"1px solid #333"}}>
-                                <td style={{padding:8,color:"#d850ff",fontWeight:"bold",fontSize:11}}>{algo}</td>
-                                <td style={{padding:8,textAlign:"right",fontSize:11}}>{r.avgWait?.toFixed(1) ?? "N/A"}</td>
-                                <td style={{padding:8,textAlign:"right",fontSize:11}}>{r.avgTurnaround?.toFixed(1) ?? "N/A"}</td>
-                                <td style={{padding:8,textAlign:"right",color:"#f5c518",fontWeight:"bold",fontSize:11}}>{score.toFixed(0)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      {(() => {
+                          const comps = Array.isArray(cpuCompareResults) ? cpuCompareResults : computeAllComparisons(cpuProcesses, cpuTimeQuantum);
+                          const minWait = Math.min(...comps.map(c=>c.avgWait));
+                          const maxWait = Math.max(...comps.map(c=>c.avgWait));
+                          const pros = {
+                            "FCFS":"Best for batch",
+                            "SJF":"Min avg wait",
+                            "SRTF":"Optimal preemptive",
+                            "RR":"Fair time-share",
+                            "Priority":"Urgent tasks"
+                          };
+                          return (
+                            <table style={{width:"100%",fontSize:11,color:"#aaa",borderCollapse:"collapse"}}>
+                              <thead><tr style={{background:"rgba(92,191,255,0.08)",borderBottom:"2px solid #555"}}>
+                                <th style={{padding:8,textAlign:"left",color:"#d850ff",fontSize:12,fontWeight:"bold"}}>Algorithm</th>
+                                <th style={{padding:8,textAlign:"left",color:"#ffaa88",fontSize:12,fontWeight:"bold"}}>Avg Wait</th>
+                                <th style={{padding:8,textAlign:"left",color:"#88aaff",fontSize:12,fontWeight:"bold"}}>Avg TAT</th>
+                                <th style={{padding:8,textAlign:"left",color:"#f5c518",fontSize:12,fontWeight:"bold"}}>Notes</th>
+                                <th style={{padding:8,textAlign:"left",color:"#5cbfff",fontSize:12,fontWeight:"bold"}}>Gantt</th>
+                              </tr></thead>
+                              <tbody>
+                                {comps.map(c=>{
+                                  const winner = c.avgWait === minWait;
+                                  const barWidth = maxWait>0 ? (1 - c.avgWait/maxWait) * 100 : 0;
+                                  return (
+                                    <tr key={c.algo} style={{borderBottom:"1px solid #333"}}>
+                                      <td style={{padding:8,color:"#d850ff",fontWeight:"bold",fontSize:11}}>
+                                        {winner && <span>🏆 </span>}{c.algo}
+                                      </td>
+                                      <td style={{padding:8,fontSize:11}}>
+                                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                                          <span>{c.avgWait.toFixed(1)}</span>
+                                          <div style={{flex:1,height:6,background:barWidth>50?"#88ff88":"#ff8888",width:`${barWidth}%`}}></div>
+                                        </div>
+                                      </td>
+                                      <td style={{padding:8,textAlign:"right",fontSize:11}}>{c.avgTurnaround.toFixed(1)}</td>
+                                      <td style={{padding:8,fontSize:11}}>{pros[c.algo]}</td>
+                                      <td style={{padding:8}}>
+                                        <div style={{display:"flex",gap:1}}>
+                                          {c.gantt.map((seg,i)=>{
+                                            const w = 8;
+                                            return <div key={i} style={{width:w,height:16,background:seg.color,borderRadius:2}}></div>;
+                                          })}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          );
+                        })()}
                     </div>
                   )}
                 </div>
@@ -4029,6 +4117,25 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                               <div style={{flex:1,height:28,background:f.job?f.job.color:"#222",border:`1px solid ${f.job?"#666":"#333"}`,borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:10,fontWeight:"bold"}}>{f.job?.name || "—"}</div>
                             </div>
                           ))}
+                          {/* computation breakdown */}
+                          <div style={{marginTop:10,padding:8,background:"rgba(0,0,0,0.4)",border:"1px solid #58ff8944",borderRadius:4,fontSize:11,color:"#c8d0e8"}}>
+                            <div style={{fontWeight:"bold",marginBottom:6}}>How it was computed:</div>
+                            {alloc.allocations.map(a=>{
+                              const job = memJobs.find(j=>j.id===a.jobId);
+                              const pages = Math.ceil(job.size/memPageSize);
+                              const waste = pages*memPageSize - job.size;
+                              return (
+                                <div key={a.jobId} style={{marginBottom:4}}>
+                                  {job.name}: pages = ceil({job.size}/{memPageSize}) = {pages}; waste = ({pages}×{memPageSize})−{job.size} = {waste}MB
+                                </div>
+                              );
+                            })}
+                            <div style={{marginTop:6,borderTop:"1px solid #555",paddingTop:6}}>
+                              Total frames: {alloc.frames.length}<br/>
+                              Total internal waste: {alloc.internalWaste}MB<br/>
+                              Utilization = {(memTotalRam-alloc.externalFragmentation)}/{memTotalRam}×100 = {alloc.utilization.toFixed(1)}%
+                            </div>
+                          </div>
                         </div>
 
                         {/* Strategy Info */}
@@ -4052,6 +4159,91 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
               </div>
             )}
           </div>
+
+          {/* FULL-SCREEN ALGORITHM ARENA */}
+          {showAlgoArena && (() => {
+            const comps = computeAllComparisons(cpuProcesses, cpuTimeQuantum);
+            const minWait = Math.min(...comps.map(c=>c.avgWait));
+            const maxWait = Math.max(...comps.map(c=>c.avgWait));
+            const pros = {
+              "FCFS":"Good for batch / simple queues",
+              "SJF":"Minimizes average wait",
+              "SRTF":"Preemptive, fair to short jobs",
+              "RR":"Time-slicing fairness",
+              "Priority":"Handles urgent tasks"
+            };
+            const cons = {
+              "FCFS":"Long jobs can block others",
+              "SJF":"Requires knowing job lengths",
+              "SRTF":"Can thrash with many short tasks",
+              "RR":"Can increase turnaround time",
+              "Priority":"Low priorities may starve"
+            };
+
+            const randomize = () => {
+              const newProcs = Array.from({length:4}, (_,i) => ({
+                id: i,
+                arrivalTime: Math.floor(Math.random()*5),
+                burstTime: 2 + Math.floor(Math.random()*9),
+                priority: 1 + Math.floor(Math.random()*3)
+              }));
+              setCpuProcesses(newProcs);
+              setCpuResults(null);
+              setCpuCompareResults(null);
+            };
+
+            return (
+              <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:800,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+                <div style={{padding:"14px 24px",borderBottom:"2px solid rgba(216,80,255,0.3)",display:"flex",justifyContent:"space-between",alignItems:"center",background:"rgba(0,0,0,0.6)"}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'1rem'}}>
+                    <button className="btn" onClick={()=>setShowAlgoArena(false)}
+                      style={{background:'#2a1a4e',border:'1px solid #7c3aed',fontSize:'clamp(13px,1.4vw,18px)'}}>
+                      ← Back to Simulator
+                    </button>
+                    <div className="cinzel" style={{fontSize:16,color:"#d850ff",letterSpacing:3}}>⚔ ALGORITHM ARENA</div>
+                  </div>
+                  <div style={{display:"flex",gap:10}}>
+                    <button className="btn" style={{padding:"8px 16px",fontSize:11}} onClick={()=>setShowAlgoArena(false)}>✕ Close</button>
+                    <button className="btn btn-blue" style={{padding:"8px 16px",fontSize:11}} onClick={randomize}>🎲 New Processes</button>
+                  </div>
+                </div>
+
+                <div style={{flex:1,overflow:"auto",padding:18,display:"flex",flexDirection:"column"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:12,flex:1}}>
+                    {comps.map(c=>{
+                      const isWinner = c.avgWait === minWait;
+                      const barPct = maxWait>0 ? Math.max(8, 100 - (c.avgWait / maxWait)*100) : 100;
+                      return (
+                        <div key={c.algo} style={{background:"rgba(24,24,30,0.85)",border:"1px solid rgba(216,80,255,0.25)",borderRadius:14,padding:14,display:"flex",flexDirection:"column",gap:10}}>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                            <div style={{fontSize:14,fontWeight:"bold",color:"#d850ff"}}>{c.algo} {isWinner?"🏆":""}</div>
+                            <div style={{fontSize:11,color:"#aaa"}}>Avg Wait {c.avgWait.toFixed(1)}</div>
+                          </div>
+                          <div style={{height:10,background:"rgba(255,255,255,0.1)",borderRadius:6,overflow:"hidden"}}>
+                            <div style={{width:`${barPct}%`,height:"100%",background:isWinner?"#88ff88":"#ff88aa"}}></div>
+                          </div>
+                          <div style={{fontSize:11,color:"#c8c8e8",lineHeight:1.5}}>
+                            <div><strong>Avg TAT:</strong> {c.avgTurnaround.toFixed(1)}</div>
+                            <div><strong>Pros:</strong> {pros[c.algo]}</div>
+                            <div><strong>Cons:</strong> {cons[c.algo]}</div>
+                          </div>
+                          <div style={{display:"flex",gap:2,flexWrap:"wrap",marginTop:6}}>
+                            {c.gantt.map((seg,i)=>(
+                              <div key={i} title={`P${seg.id} (${seg.end-seg.start})`} style={{flex:`0 0 ${100/Math.max(1,c.gantt.length)}%`,height:14,background:seg.color,borderRadius:3}}></div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{paddingTop:14,borderTop:"1px solid rgba(216,80,255,0.2)",display:"flex",justifyContent:"center",gap:12}}>
+                    <button className="btn" style={{padding:"10px 18px",fontSize:12}} onClick={()=>{ setShowAlgoArena(false); setCpuCompareResults(null); }}>← Back to Simulator</button>
+                    <button className="btn" style={{padding:"10px 18px",fontSize:12}} onClick={()=>setShowAlgoArena(false)}>✕ Close</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

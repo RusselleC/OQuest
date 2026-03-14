@@ -6,7 +6,7 @@
 const T = { GRASS:0, DARK_GRASS:1, PATH:2, WATER:3, TREE:4, ROCK:5, HOUSE:6, CASTLE:7, SAND:8, FLOWER:9, CHEST:10 };
 
 export function TileCell({ type, x, y, tick }) {
-  const TILE = 64;
+  const TILE = 80;
   const time = tick * 0.016;
 
   // Water animation

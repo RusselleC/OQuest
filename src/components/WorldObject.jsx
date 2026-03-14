@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════
 
 const T = { TREE:4, ROCK:5, HOUSE:6, CASTLE:7, CHEST:10 };
-const TILE = 64;
+const TILE = 80;
 
 export function WorldObject({ type, x, y, tick }) {
 

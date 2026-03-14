@@ -2,11 +2,11 @@
 //  GAME CONSTANTS
 // ═══════════════════════════════════════
 
-export const TILE = 64;
+export const TILE = 80;
 export const MAP_W = 50;
 export const MAP_H = 35;
-export const VIEW_W = 19;
-export const VIEW_H = 10;
+export const VIEW_W = 25;
+export const VIEW_H = 16;
 export const MOVE_DELAY = 5;
 
 export const T = {

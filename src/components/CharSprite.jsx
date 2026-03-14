@@ -803,7 +803,7 @@ function BossSprite({ tick, flash }) {
 }
 
 // ── MAIN CHARSPRITE EXPORT ────────────────────────────────────────
-export function CharSprite({ role, moving=false, color="#f5c518", size=64, flash=false, tick=0, facing=0 }) {
+export function CharSprite({ role, moving=false, color="#f5c518", size=80, flash=false, tick=0, facing=0 }) {
   const s = size / 64;
   const filt = flash ? "brightness(2.8) saturate(0.1)" : "none";
   const flipX = facing === 2 ? "scaleX(-1)" : "scaleX(1)";
