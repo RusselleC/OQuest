@@ -404,6 +404,86 @@ const computeMemoryAllocation = (jobs, totalRam, pageSize, strategy) => {
   return {frames, allocations, externalFragmentation, utilization, internalWaste: allocations.reduce((sum, a) => sum + a.internalWaste, 0)};
 };
 
+// PAGE REPLACEMENT ALGORITHMS
+const computeNextFit = (partitions, jobSize, lastIdx) => {
+  for (let i = lastIdx; i < partitions.length; i++) {
+    if (!partitions[i].job && partitions[i].size >= jobSize) return i;
+  }
+  for (let i = 0; i < lastIdx; i++) {
+    if (!partitions[i].job && partitions[i].size >= jobSize) return i;
+  }
+  return -1;
+};
+
+const computeFIFO = (refString, numFrames) => {
+  const frames = [];
+  const log = [];
+  let pageFaults = 0;
+  
+  for (const page of refString) {
+    const hit = frames.includes(page);
+    if (!hit) {
+      pageFaults++;
+      if (frames.length >= numFrames) frames.shift();
+      frames.push(page);
+    }
+    log.push({ page, frames: [...frames], fault: !hit });
+  }
+  return { log, pageFaults, algo: "FIFO" };
+};
+
+const computeLRU = (refString, numFrames) => {
+  const frames = [];
+  const usage = new Map();
+  const log = [];
+  let pageFaults = 0;
+  
+  refString.forEach((page, idx) => {
+    const hit = frames.includes(page);
+    if (!hit) {
+      pageFaults++;
+      if (frames.length >= numFrames) {
+        const lru = frames.reduce((min, f) => (usage.get(f) || 0) < (usage.get(min) || 0) ? f : min);
+        frames.splice(frames.indexOf(lru), 1);
+      }
+      frames.push(page);
+    }
+    usage.set(page, idx);
+    log.push({ page, frames: [...frames], fault: !hit });
+  });
+  return { log, pageFaults, algo: "LRU" };
+};
+
+const computeOptimal = (refString, numFrames) => {
+  const frames = [];
+  const log = [];
+  let pageFaults = 0;
+  
+  for (let idx = 0; idx < refString.length; idx++) {
+    const page = refString[idx];
+    const hit = frames.includes(page);
+    if (!hit) {
+      pageFaults++;
+      if (frames.length >= numFrames) {
+        let toRemove = frames[0];
+        let maxDist = -1;
+        for (const f of frames) {
+          const nextUse = refString.slice(idx + 1).indexOf(f);
+          const dist = nextUse === -1 ? Infinity : nextUse;
+          if (dist > maxDist) {
+            maxDist = dist;
+            toRemove = f;
+          }
+        }
+        frames.splice(frames.indexOf(toRemove), 1);
+      }
+      frames.push(page);
+    }
+    log.push({ page, frames: [...frames], fault: !hit });
+  }
+  return { log, pageFaults, algo: "Optimal" };
+};
+
 // helper to build comparison array for all algorithms
 const computeAllComparisons = (processes, quantum) => {
   const algos = ["FCFS","SJF","SRTF","RR","Priority"];
@@ -511,6 +591,19 @@ export default function OSQuestGame() {
   const [memNpcStep, setMemNpcStep] = useState(0);
   const [memNpcMinimized, setMemNpcMinimized] = useState(false);
   const [memPageSize, setMemPageSize] = useState(64);
+  const [memMode, setMemMode] = useState("contiguous"); // "contiguous" | "paging"
+  const [memTab, setMemTab] = useState("allocation"); // "allocation" | "paging"
+  const [memPartitions, setMemPartitions] = useState([
+    { id: 1, size: 256, startAddr: 0, job: null },
+    { id: 2, size: 128, startAddr: 256, job: null },
+    { id: 3, size: 512, startAddr: 384, job: null }
+  ]);
+  const [pageFrames, setPageFrames] = useState(4);
+  const [pageRefString, setPageRefString] = useState([7,0,1,2,0,3,0,4]);
+  const [prrAlgo, setPrrAlgo] = useState("FIFO"); // FIFO, LRU, Optimal
+  const [lastAllocIdx, setLastAllocIdx] = useState(0);
+  const [pageResults, setPageResults] = useState(null);
+  const [memFragStats, setMemFragStats] = useState({internalFrag: 0, externalFrag: 0, utilization: 0});
 
   // Memoize memory allocation to prevent infinite render loops
   const memAllocResult = useMemo(() => 
@@ -3886,51 +3979,90 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             {currentLessonPortal==="memory-management" && (
               <div style={{background:"rgba(0,0,0,0.3)",borderRight:"1px solid #58ff8944",overflow:"hidden",display:"flex",flexDirection:"column"}}>
                 <div style={{overflowY:"auto",flex:1,paddingRight:"4px"}}>
-                  {/* Settings */}
-                  <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
-                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Total RAM (MB):</div>
-                    <input type="number" value={memTotalRam} onChange={e=>setMemTotalRam(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
-                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Page Size (MB):</div>
-                    <input type="number" value={memPageSize} onChange={e=>setMemPageSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
-                    <div style={{fontSize:15,color:"#58ff89",fontWeight:"bold",marginBottom:6}}>STRATEGY</div>
-                    {["first-fit","best-fit","worst-fit"].map(s=>(
-                      <button key={s} className="btn" style={{width:"100%",textAlign:"center",margin:"4px 0",padding:"8px",fontSize:14,fontWeight:600,
-                        background:memStrategy===s?"#58ff8933":"transparent",
-                        color:memStrategy===s?"#58ff89":"#999",borderColor:memStrategy===s?"#58ff89":"#555"}}
-                        onClick={()=>{setMemStrategy(s);if(memNpcStep===2) setMemNpcStep(3);}}>{s}</button>
-                    ))}
+                  {/* Tabs */}
+                  <div style={{display:"flex",gap:4,padding:"8px",borderBottom:"1px solid #333",background:"rgba(0,0,0,0.4)"}}>
+                    <button style={{flex:1,padding:"6px",fontSize:13,fontWeight:"bold",background:memTab==="allocation"?"#58ff8933":"transparent",color:memTab==="allocation"?"#58ff89":"#666",borderRadius:3,border:"1px solid #555"}} onClick={()=>setMemTab("allocation")}>📦 Allocation</button>
+                    <button style={{flex:1,padding:"6px",fontSize:13,fontWeight:"bold",background:memTab==="paging"?"#58ff8933":"transparent",color:memTab==="paging"?"#58ff89":"#666",borderRadius:3,border:"1px solid #555"}} onClick={()=>setMemTab("paging")}>📄 Paging</button>
                   </div>
 
-                  {/* Add Job */}
-                  <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
-                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Job Name:</div>
-                    <input type="text" placeholder="e.g., Browser" value={memNewName} onChange={e=>setMemNewName(e.target.value)} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
-                    <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Size (MB):</div>
-                    <input type="number" min="16" value={memNewSize} onChange={e=>setMemNewSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:10}}/>
-                    <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:14,fontWeight:"bold"}} onClick={()=>{
-                      if(memNewName.trim()) {
-                        const newId = Math.max(...memJobs.map(j=>j.id),0)+1;
-                        setMemJobs([...memJobs,{id:newId,name:memNewName,size:memNewSize,color:colors[newId%colors.length]}]);
-                        setMemNewName("");setMemNewSize(128);
-                        if(memNpcStep===0) setMemNpcStep(1);
-                        else if(memNpcStep===1) setMemNpcStep(2);
-                      }
-                    }}>+ ADD JOB</button>
-                  </div>
-
-                  {/* Jobs List */}
-                  <div style={{padding:"10px 12px"}}>
-                    <div style={{fontSize:16,color:"#58ff89",fontWeight:"bold",marginBottom:8}}>Jobs ({memJobs.length})</div>
-                    {memJobs.map(j=>(
-                      <div key={j.id} style={{fontSize:15,color:"#bbb",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"rgba(0,0,0,0.4)",borderRadius:4}}>
-                        <span style={{color:j.color,fontWeight:"bold"}}>{j.name} ({j.size}MB)</span>
-                        <button className="btn" style={{padding:"4px 8px",fontSize:13,color:"#f88",borderColor:"#f884"}} onClick={()=>{
-                          setMemJobs(memJobs.filter(x=>x.id!==j.id));
-                          if(memNpcStep===3) setMemNpcStep(4);
-                        }}>✕</button>
+                  {memTab === "allocation" && (
+                    <div>
+                      {/* Settings */}
+                      <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
+                        <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Total RAM (MB):</div>
+                        <input type="number" value={memTotalRam} onChange={e=>setMemTotalRam(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                        <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Page Size (MB):</div>
+                        <input type="number" value={memPageSize} onChange={e=>setMemPageSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                        <div style={{fontSize:15,color:"#58ff89",fontWeight:"bold",marginBottom:6}}>STRATEGY</div>
+                        {["first-fit","best-fit","worst-fit","next-fit"].map(s=>(
+                          <button key={s} className="btn" style={{width:"100%",textAlign:"center",margin:"4px 0",padding:"8px",fontSize:14,fontWeight:600,
+                            background:memStrategy===s?"#58ff8933":"transparent",
+                            color:memStrategy===s?"#58ff89":"#999",borderColor:memStrategy===s?"#58ff89":"#555"}}
+                            onClick={()=>{setMemStrategy(s);if(memNpcStep===2) setMemNpcStep(3);}}>{s}</button>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+
+                      {/* Add Job */}
+                      <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
+                        <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Job Name:</div>
+                        <input type="text" placeholder="e.g., Browser" value={memNewName} onChange={e=>setMemNewName(e.target.value)} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                        <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Size (MB):</div>
+                        <input type="number" min="16" value={memNewSize} onChange={e=>setMemNewSize(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:10}}/>
+                        <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:14,fontWeight:"bold"}} onClick={()=>{
+                          if(memNewName.trim()) {
+                            const newId = Math.max(...memJobs.map(j=>j.id),0)+1;
+                            setMemJobs([...memJobs,{id:newId,name:memNewName,size:memNewSize,color:colors[newId%colors.length]}]);
+                            setMemNewName("");setMemNewSize(128);
+                            if(memNpcStep===0) setMemNpcStep(1);
+                            else if(memNpcStep===1) setMemNpcStep(2);
+                          }
+                        }}>+ ADD JOB</button>
+                      </div>
+
+                      {/* Jobs List */}
+                      <div style={{padding:"10px 12px"}}>
+                        <div style={{fontSize:16,color:"#58ff89",fontWeight:"bold",marginBottom:8}}>Jobs ({memJobs.length})</div>
+                        {memJobs.map(j=>(
+                          <div key={j.id} style={{fontSize:15,color:"#bbb",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px",background:"rgba(0,0,0,0.4)",borderRadius:4}}>
+                            <span style={{color:j.color,fontWeight:"bold"}}>{j.name} ({j.size}MB)</span>
+                            <button className="btn" style={{padding:"4px 8px",fontSize:13,color:"#f88",borderColor:"#f884"}} onClick={()=>{
+                              setMemJobs(memJobs.filter(x=>x.id!==j.id));
+                              if(memNpcStep===3) setMemNpcStep(4);
+                            }}>✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {memTab === "paging" && (
+                    <div>
+                      {/* Paging Settings */}
+                      <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
+                        <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Physical Frames:</div>
+                        <input type="number" min="2" max="8" value={pageFrames} onChange={e=>setPageFrames(Number(e.target.value))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:8}}/>
+                        <div style={{fontSize:15,color:"#58ff89",fontWeight:"bold",marginBottom:6}}>REPLACEMENT ALGO</div>
+                        {["FIFO","LRU","Optimal"].map(a=>(
+                          <button key={a} className="btn" style={{width:"100%",textAlign:"center",margin:"4px 0",padding:"8px",fontSize:14,fontWeight:600,
+                            background:prrAlgo===a?"#58ff8933":"transparent",
+                            color:prrAlgo===a?"#58ff89":"#999",borderColor:prrAlgo===a?"#58ff89":"#555"}}
+                            onClick={()=>setPrrAlgo(a)}>{a}</button>
+                        ))}
+                      </div>
+                      <div style={{padding:"12px",borderBottom:"1px solid #333"}}>
+                        <div style={{fontSize:15,color:"#888",marginBottom:5,fontWeight:"bold"}}>Page Reference String:</div>
+                        <input type="text" placeholder="e.g., 7,0,1,2,0,3,0,4" value={pageRefString.join(",")} onChange={e=>setPageRefString(e.target.value.split(",").map(x=>Number(x.trim())).filter(x=>!isNaN(x)))} style={{width:"100%",padding:"8px",borderRadius:4,background:"#1a1a1a",color:"#58ff89",border:"1px solid #555",fontSize:14,marginBottom:10}}/>
+                        <button className="btn btn-blue" style={{width:"100%",padding:"10px",fontSize:14,fontWeight:"bold"}} onClick={()=>{
+                          let result;
+                          if(prrAlgo==="FIFO") result = computeFIFO(pageRefString, pageFrames);
+                          else if(prrAlgo==="LRU") result = computeLRU(pageRefString, pageFrames);
+                          else result = computeOptimal(pageRefString, pageFrames);
+                          setPageResults(result);
+                          if(memNpcStep<=5) setMemNpcStep(6);
+                        }}>▶ SIMULATE</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -4082,6 +4214,8 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
             {/* MEMORY: RIGHT RESULTS */}
             {currentLessonPortal==="memory-management" && (
               <div style={{background:"rgba(0,0,0,0.2)",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+                {memTab === "allocation" && (
+                  <>
                 {(() => {
                   const alloc = memAllocResult;
                   return (
@@ -4136,6 +4270,127 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                               Utilization = {(memTotalRam-alloc.externalFragmentation)}/{memTotalRam}×100 = {alloc.utilization.toFixed(1)}%
                             </div>
                           </div>
+
+                          {/* PARTITION TABLE - GFG Style */}
+                          <div style={{marginTop:14,padding:10,background:"rgba(0,0,0,0.4)",border:"1px solid #58ff8944",borderRadius:6}}>
+                            <div style={{fontSize:13,color:"#58ff89",fontWeight:"bold",marginBottom:8,letterSpacing:1}}>
+                              📋 PARTITION TABLE
+                            </div>
+                            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                              <thead>
+                                <tr style={{background:"rgba(88,255,137,0.12)",borderBottom:"2px solid #58ff8944"}}>
+                                  <th style={{padding:"8px 10px",textAlign:"left",color:"#58ff89",fontWeight:"bold"}}>
+                                    Starting Address
+                                  </th>
+                                  <th style={{padding:"8px 10px",textAlign:"left",color:"#58ff89",fontWeight:"bold"}}>
+                                    Size of Partition
+                                  </th>
+                                  <th style={{padding:"8px 10px",textAlign:"left",color:"#58ff89",fontWeight:"bold"}}>
+                                    Status
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(() => {
+                                  const rows = [];
+                                  let i = 0;
+                                  while (i < alloc.frames.length) {
+                                    const frame = alloc.frames[i];
+                                    if (frame.job) {
+                                      const jobName = frame.job.name;
+                                      let count = 0;
+                                      while (
+                                        i + count < alloc.frames.length &&
+                                        alloc.frames[i + count].job?.name === jobName
+                                      ) {
+                                        count++;
+                                      }
+                                      rows.push({
+                                        start: `${frame.startMB}k`,
+                                        size: `${count * memPageSize}k`,
+                                        status: "allocated",
+                                        color: frame.job.color,
+                                        jobName
+                                      });
+                                      i += count;
+                                    } else {
+                                      let count = 0;
+                                      while (
+                                        i + count < alloc.frames.length &&
+                                        !alloc.frames[i + count].job
+                                      ) {
+                                        count++;
+                                      }
+                                      rows.push({
+                                        start: `${frame.startMB}k`,
+                                        size: `${count * memPageSize}k`,
+                                        status: "free",
+                                        color: null,
+                                        jobName: null
+                                      });
+                                      i += count;
+                                    }
+                                  }
+                                  return rows.map((row, idx) => (
+                                    <tr
+                                      key={idx}
+                                      style={{
+                                        borderBottom: "1px solid rgba(88,255,137,0.15)",
+                                        background: idx % 2 === 0
+                                          ? "rgba(255,255,255,0.02)"
+                                          : "transparent"
+                                      }}
+                                    >
+                                      <td style={{
+                                        padding: "8px 10px",
+                                        color: "#c8d0e8",
+                                        fontFamily: "monospace",
+                                        fontSize: 12
+                                      }}>
+                                        {row.start}
+                                      </td>
+                                      <td style={{
+                                        padding: "8px 10px",
+                                        color: "#c8d0e8",
+                                        fontFamily: "monospace",
+                                        fontSize: 12
+                                      }}>
+                                        {row.size}
+                                      </td>
+                                      <td style={{ padding: "8px 10px" }}>
+                                        {row.status === "allocated" ? (
+                                          <span style={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: 6
+                                          }}>
+                                            <span style={{
+                                              width: 10,
+                                              height: 10,
+                                              borderRadius: 2,
+                                              background: row.color,
+                                              display: "inline-block",
+                                              flexShrink: 0
+                                            }}/>
+                                            <span style={{color: row.color, fontWeight: "bold", fontSize: 12}}>
+                                              allocated
+                                            </span>
+                                            <span style={{color: "#888", fontSize: 11}}>
+                                              ({row.jobName})
+                                            </span>
+                                          </span>
+                                        ) : (
+                                          <span style={{color: "#888", fontStyle: "italic", fontSize: 12}}>
+                                            free
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ));
+                                })()}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
 
                         {/* Strategy Info */}
@@ -4156,6 +4411,56 @@ input.rin::placeholder{color:rgba(232,213,160,0.6);}
                     </>
                   );
                 })()}
+                  </>
+                )}
+
+                {/* PAGING RESULTS */}
+                {memTab === "paging" && pageResults && (
+                  <div style={{display:"flex",flexDirection:"column",overflow:"hidden",flex:1}}>
+                    {/* Metrics */}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,padding:"12px",borderBottom:"1px solid #333",flex:"0 0 auto"}}>
+                      <div style={{background:"rgba(88,255,137,0.05)",padding:10,borderRadius:4,border:"1px solid #58ff8944",textAlign:"center"}}>
+                        <div style={{color:"#888",fontSize:11,marginBottom:6,fontWeight:"bold"}}>ALGORITHM</div>
+                        <div style={{color:"#58ff89",fontWeight:"bold",fontSize:14}}>{pageResults.algo}</div>
+                      </div>
+                      <div style={{background:"rgba(88,255,137,0.05)",padding:10,borderRadius:4,border:"1px solid #58ff8944",textAlign:"center"}}>
+                        <div style={{color:"#888",fontSize:11,marginBottom:6,fontWeight:"bold"}}>PAGE FAULTS</div>
+                        <div style={{color:"#ff8888" ,fontWeight:"bold",fontSize:14}}>{pageResults.pageFaults}</div>
+                      </div>
+                    </div>
+
+                    {/* Page Reference Table */}
+                    <div style={{overflowY:"auto",flex:1,paddingRight:6,paddingLeft:12,paddingBottom:12}}>
+                      <table style={{width:"100%",fontSize:11,color:"#aaa",borderCollapse:"collapse",marginTop:8}}>
+                        <thead><tr style={{borderBottom:"1px solid #555",background:"rgba(88,255,137,0.08)"}}>
+                          <th style={{textAlign:"left",padding:"6px",color:"#58ff89",fontSize:11,fontWeight:"bold"}}>Step</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#58ff89",fontSize:11,fontWeight:"bold"}}>Page</th>
+                          <th style={{textAlign:"left",padding:"6px",color:"#58ff89",fontSize:11,fontWeight:"bold"}}>Frames</th>
+                          <th style={{textAlign:"center",padding:"6px",color:"#58ff89",fontSize:11,fontWeight:"bold"}}>Fault?</th>
+                        </tr></thead>
+                        <tbody>
+                          {pageResults.log.map((entry, idx) => (
+                            <tr key={idx} style={{borderBottom:"1px solid #333"}}>
+                              <td style={{padding:"6px",color:"#999",fontSize:10}}>{idx}</td>
+                              <td style={{padding:"6px",color:"#5cbfff",fontSize:10,fontWeight:"bold"}}>{entry.page}</td>
+                              <td style={{padding:"6px",color:"#bbb",fontSize:10}}>[{entry.frames.join(", ")}]</td>
+                              <td style={{padding:"6px",textAlign:"center",color:entry.fault?"#ff8888":"#88ff88",fontSize:10,fontWeight:"bold"}}>{entry.fault ? "✓" : "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {memTab === "paging" && !pageResults && (
+                  <div style={{color:"#666",textAlign:"center",padding:"60px 20px",flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <div>
+                      <div style={{fontSize:14,marginBottom:10}}>Set reference string & click SIMULATE</div>
+                      <div style={{fontSize:11,color:"#555"}}>Example: 7,0,1,2,0,3,0,4</div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
